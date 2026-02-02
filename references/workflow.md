@@ -1,0 +1,35 @@
+# Workflow
+
+1. Run `~/.venvs/jupyter/bin/python scripts/check_deps.py` to confirm Nougat-OCR and Docling are available.
+   - If using dedicated venvs, pass `--nougat-cmd /path/to/nougat` and `--docling-cmd /path/to/docling`.
+2. Run `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py <pdf> --output-dir outputs`.
+   - Add `--nougat-cmd` and `--docling-cmd` when CLIs are not on PATH.
+   - `--nougat-args` defaults to `"-m 0.1.0-base"`; override it to change the model.
+   - Use `--merge-only` to reuse existing `text.mmd` and `figures.md` without re-running OCR/Docling (the PDF itself does not need to exist; its stem is used to locate outputs).
+   - Add `--normalize-math` if you want `\(...\)` and `\[...\]` converted to `$...$` and `$$...$$`.
+3. The script runs Nougat first (base model by default) to extract text/math/tables, then runs Docling to extract figures and footnotes.
+4. `combined.md` is based on the Nougat Markdown with Docling figure blocks appended at the end under a `## Figures` section. Docling footnotes are inserted inline as Markdown footnotes; any unplaced footnotes are listed under `## Footnotes (Unplaced)` at the end.
+5. If `--normalize-math` is set, the script converts `\\[ ... \\]` to `$$ ... $$` and `\\( ... \\)` to `$ ... $`.
+6. Review `outputs/<stem>/combined.md` and the figures directory.
+7. Optional LaTeX conversion:
+   - One-shot: re-run extraction with `--to-latex` (optionally `--pandoc-cmd`); this post-processes LaTeX to move figures/tables inline and add `\caption{}`.
+   - `~/.venvs/jupyter/bin/python scripts/prepare_md_for_latex.py outputs/<stem>/combined.md`
+   - `pandoc outputs/<stem>/combined_for_tex.md -s --from markdown+tex_math_dollars+tex_math_single_backslash -o outputs/<stem>/combined.tex`
+
+## Portability (install once per machine)
+Option A: Copy
+
+1. `git clone <your-repo-url> ~/dev/pdf-to-md-skill`
+2. `mkdir -p $CODEX_HOME/skills`
+3. `cp -R ~/dev/pdf-to-md-skill $CODEX_HOME/skills/pdf-to-md`
+
+Option B: Symlink (keeps updates in sync)
+
+1. `git clone <your-repo-url> ~/dev/pdf-to-md-skill`
+2. `mkdir -p $CODEX_HOME/skills`
+3. `ln -s ~/dev/pdf-to-md-skill $CODEX_HOME/skills/pdf-to-md`
+
+## Notes
+- Figures are appended at the end. For inline placement, manually move figure blocks into the desired sections.
+- If Docling outputs base64 images, the script decodes them to `figures/` and rewrites Markdown paths unless `--keep-base64` is set.
+- GPU acceleration can significantly reduce runtime for both tools; CPU-only runs are supported but slower.

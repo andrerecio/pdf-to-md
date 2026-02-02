@@ -1,0 +1,8 @@
+venvs/
+outputs/
+.venv/
+venv/
+.DS_Store
+.tmp.driveupload/
+dist/
+*.skill
