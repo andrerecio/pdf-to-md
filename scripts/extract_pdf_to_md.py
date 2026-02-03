@@ -246,6 +246,24 @@ def normalize_inline_math(text: str) -> str:
     return re.sub(r"\\\((.*?)\\\)", lambda m: f"${m.group(1).strip()}$", text, flags=re.DOTALL)
 
 
+def yaml_escape(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("\"", "\\\"")
+    return escaped.replace("\n", " ")
+
+
+def build_yaml_metadata(title: str | None, author: str | None, date: str | None) -> str:
+    items: list[str] = []
+    if title:
+        items.append(f"title: \"{yaml_escape(title)}\"")
+    if author:
+        items.append(f"author: \"{yaml_escape(author)}\"")
+    if date:
+        items.append(f"date: \"{yaml_escape(date)}\"")
+    if not items:
+        return ""
+    return "---\n" + "\n".join(items) + "\n---\n\n"
+
+
 def extract_figure_blocks(text: str) -> list[str]:
     lines = text.splitlines()
     blocks: list[str] = []
@@ -756,6 +774,9 @@ def main() -> int:
         action="store_true",
         help="Generate combined_for_tex.md and combined.tex via Pandoc.",
     )
+    parser.add_argument("--title", help="Title metadata for Pandoc/YAML front matter.")
+    parser.add_argument("--author", help="Author metadata for Pandoc/YAML front matter.")
+    parser.add_argument("--date", help="Date metadata for Pandoc/YAML front matter.")
     parser.add_argument("--pandoc-cmd", help="Path to pandoc executable")
     parser.add_argument("--keep-base64", action="store_true", help="Keep Docling base64 images in Markdown")
     args = parser.parse_args()
@@ -862,6 +883,10 @@ def main() -> int:
     if args.normalize_math:
         combined_text = normalize_bracket_math(combined_text)
         combined_text = normalize_inline_math(combined_text)
+
+    metadata_block = build_yaml_metadata(args.title, args.author, args.date)
+    if metadata_block:
+        combined_text = metadata_block + combined_text.lstrip()
 
     combined_text = combined_text.rstrip() + "\n"
     combined_md.write_text(combined_text, encoding="utf-8")

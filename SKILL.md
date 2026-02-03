@@ -36,6 +36,9 @@ Use Nougat-OCR (base model by default) for text, math, tables, and verbatim bloc
 - `--normalize-math` normalize `\(...\)` to `$...$` and `\[...\]` to `$$...$$`.
 - `--inline-figures` use Docling Markdown as the base so figures stay inline; Nougat math/tables are inserted by alignment.
 - `--to-latex` generate `combined_for_tex.md` and `combined.tex` via Pandoc.
+- `--title` set Pandoc/YAML title metadata.
+- `--author` set Pandoc/YAML author metadata.
+- `--date` set Pandoc/YAML date metadata.
 - `--pandoc-cmd` explicit path to the Pandoc executable (used with `--to-latex`).
 - `--nougat-cmd` explicit path to the Nougat executable.
 - `--nougat-args` extra arguments passed to the Nougat CLI (defaults to `"-m 0.1.0-base"`).

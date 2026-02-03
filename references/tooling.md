@@ -41,6 +41,7 @@
   - `pandoc combined_for_tex.md -s --from markdown+tex_math_dollars+tex_math_single_backslash -o combined.tex`
 - One-shot (uses Pandoc):
   - `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py input.pdf --output-dir outputs --to-latex`
+  - Add `--title`, `--author`, and `--date` to inject YAML metadata for Pandoc.
 
 ## Inline figures
 - To keep figures inline, pass `--inline-figures` to `scripts/extract_pdf_to_md.py`; this uses Docling Markdown as the base and inserts Nougat math/tables by alignment.

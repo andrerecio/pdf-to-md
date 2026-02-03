@@ -9,6 +9,7 @@
    - Use `--merge-only` to reuse existing `text.mmd` and `figures.md` without re-running OCR/Docling (the PDF itself does not need to exist; its stem is used to locate outputs).
    - Add `--normalize-math` if you want `\(...\)` and `\[...\]` converted to `$...$` and `$$...$$`.
    - Add `--inline-figures` to use Docling Markdown as the base so figures remain inline.
+   - Add `--title`, `--author`, and `--date` to inject YAML metadata for Pandoc.
 3. The script runs Nougat first (base model by default) to extract text/math/tables, then runs Docling to extract figures and footnotes.
 4. `combined.md` is based on the Nougat Markdown with Docling figure blocks appended at the end under a `## Figures` section. Docling footnotes are inserted inline as Markdown footnotes; any unplaced footnotes are listed under `## Footnotes (Unplaced)` at the end.
    - If `--inline-figures` is set, `combined.md` starts from Docling Markdown (figures inline) and then inserts Nougat formulas/tables by alignment. Docling footnotes remain as-is in this mode.
