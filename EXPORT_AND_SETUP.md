@@ -47,6 +47,24 @@ Option B: Symlink (best for staying in sync)
 3. Verify:
    - `$CODEX_HOME/skills/pdf-to-md/SKILL.md`
 
+## 2c) Install into Cursor (skills)
+
+Cursor 2.4+ can load skills from `~/.cursor/skills` (global) or `<project>/.cursor/skills` (project-local).
+Symlinks are not always reliable, so use a real copy.
+
+Global install (recommended):
+- `mkdir -p ~/.cursor/skills`
+- `rsync -a --delete ~/Documents/GitHub/skills/pdf-to-md/ ~/.cursor/skills/pdf-to-md/`
+
+Project-local install:
+- `mkdir -p /path/to/project/.cursor/skills`
+- `rsync -a --delete ~/Documents/GitHub/skills/pdf-to-md/ /path/to/project/.cursor/skills/pdf-to-md/`
+
+One-command helper (from this repo):
+- `scripts/sync_cursor_skill.sh`
+  - Global: `scripts/sync_cursor_skill.sh`
+  - Project-local: `scripts/sync_cursor_skill.sh --project /path/to/project`
+
 ## 3) Create dedicated venvs (recommended)
 
 Use the same interpreter that was used here:

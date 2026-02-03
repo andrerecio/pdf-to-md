@@ -62,3 +62,4 @@ Option B: Symlink (keeps updates in sync)
 - See `references/tooling.md` for installation and CLI notes.
 - See `references/io-spec.md` for I/O contract details.
 - See `EXPORT_AND_SETUP.md` for cross-machine install, portability, and venv setup.
+- See `EXPORT_AND_SETUP.md` for Cursor skills installation and sync helper.
