@@ -5,6 +5,7 @@
 2. Run `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py <pdf> --output-dir outputs`.
    - Add `--nougat-cmd` and `--docling-cmd` when CLIs are not on PATH.
    - `--nougat-args` defaults to `"-m 0.1.0-base"`; override it to change the model.
+   - `--docling-args` lets you pass flags like `--device cpu --page-batch-size 1 --pipeline legacy` (useful for macOS or RT-DETR padding errors).
    - Use `--merge-only` to reuse existing `text.mmd` and `figures.md` without re-running OCR/Docling (the PDF itself does not need to exist; its stem is used to locate outputs).
    - Add `--normalize-math` if you want `\(...\)` and `\[...\]` converted to `$...$` and `$$...$$`.
 3. The script runs Nougat first (base model by default) to extract text/math/tables, then runs Docling to extract figures and footnotes.

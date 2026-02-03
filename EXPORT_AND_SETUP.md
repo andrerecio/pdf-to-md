@@ -78,6 +78,8 @@ Install the same versions used in this setup:
 ## 5) Install Docling in its venv
 
 - `/path/to/venvs/docling/bin/python -m pip install docling`
+- If Torch/Docling complains about NumPy 2.x (common on macOS), pin compatible versions:
+  - `/path/to/venvs/docling/bin/python -m pip install "numpy<2" "opencv-python==4.8.1.78"`
 
 ## 6) Run the skill pipeline
 
@@ -91,6 +93,7 @@ Install the same versions used in this setup:
      --output-dir outputs \
      --nougat-cmd /path/to/venvs/nougat/bin/nougat \
      --docling-cmd /path/to/venvs/docling/bin/docling`
+   - Optional (Docling RT-DETR padding errors / macOS): add `--docling-args "--device cpu --page-batch-size 1 --pipeline legacy"`.
    - Optional: add `--normalize-math` to convert `\(...\)`/`\[...\]` to `$...$`/`$$...$$`.
    - Optional: use `--merge-only` to reuse existing `text.mmd` and `figures.md` without re-running Nougat/Docling.
 
@@ -155,6 +158,8 @@ Then:
 - If you see a lot of `[MISSING_PAGE]` in Nougat output, rerun with `--no-skipping` (add it to the wrapper script if using the skill pipeline).
 - If the Nougat CLI is not found, re-check `--nougat-cmd` and make sure the venv path is correct.
 - If Docling does not produce a Markdown file, confirm you passed `--docling-cmd` and that the output directory is writable.
+- If Docling fails with RT-DETR padding errors, re-run with `--docling-args "--device cpu --page-batch-size 1 --pipeline legacy"`.
+- If Docling fails with NumPy 2.x / Torch errors, downgrade NumPy and OpenCV in the Docling venv: `pip install "numpy<2" "opencv-python==4.8.1.78"`.
 
 ## Notes
 

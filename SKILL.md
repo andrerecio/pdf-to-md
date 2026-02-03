@@ -10,7 +10,7 @@ Use Nougat-OCR (base model by default) for text, math, tables, and verbatim bloc
 
 ## Workflow
 1. Check dependencies: run `~/.venvs/jupyter/bin/python scripts/check_deps.py` (use `--nougat-cmd`/`--docling-cmd` if needed).
-2. Extract and merge: run `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py <path/to.pdf>` (use `--nougat-cmd`/`--docling-cmd` if needed).
+2. Extract and merge: run `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py <path/to.pdf>` (use `--nougat-cmd`/`--docling-cmd` if needed; add `--docling-args "--device cpu --page-batch-size 1 --pipeline legacy"` on macOS or if RT-DETR padding errors appear).
 3. Review outputs in `outputs/<pdf-stem>/`.
 4. Optional LaTeX conversion:
    - One-shot: add `--to-latex` (optionally `--pandoc-cmd`) to the extract command (moves figures/tables inline and injects `\caption{}` in the LaTeX).
@@ -38,6 +38,11 @@ Use Nougat-OCR (base model by default) for text, math, tables, and verbatim bloc
 - `--nougat-cmd` explicit path to the Nougat executable.
 - `--nougat-args` extra arguments passed to the Nougat CLI (defaults to `"-m 0.1.0-base"`).
 - `--docling-cmd` explicit path to the Docling executable.
+- `--docling-args` extra arguments passed to the Docling CLI (use for `--device`, `--page-batch-size`, `--pipeline`, etc.).
+
+## Troubleshooting
+- Docling RT-DETR padding errors (batched image sizes): re-run with `--docling-args "--device cpu --page-batch-size 1 --pipeline legacy"`.
+- Docling NumPy 2.x/Torch mismatch: in the Docling venv run `pip install "numpy<2" "opencv-python==4.8.1.78"`.
 
 ## Portability (install once per machine)
 Option A: Copy

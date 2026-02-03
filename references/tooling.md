@@ -14,6 +14,8 @@
   - `venvs/nougat/bin/python -m pip install "nougat-ocr==0.1.17" "transformers==4.38.2" "tokenizers==0.15.2" "albumentations==1.3.1" "pypdfium2==4.30.0"`
 - Install Docling in its own venv:
   - `venvs/docling/bin/python -m pip install docling`
+  - If Torch/Docling complains about NumPy 2.x (common on macOS), pin:
+    - `venvs/docling/bin/python -m pip install "numpy<2" "opencv-python==4.8.1.78"`
 
 ## CLI usage
 - Nougat (stdout):
@@ -27,6 +29,8 @@
 - Docling:
   - `docling --to md --image-export-mode embedded --output /path/to/output_dir input.pdf`
   - Output will be written as `/path/to/output_dir/<stem>.md`
+  - If RT-DETR padding errors appear, retry with:
+    - `docling --device cpu --page-batch-size 1 --pipeline legacy --to md --image-export-mode embedded --output /path/to/output_dir input.pdf`
 
 ## Performance
 - Both tools benefit from GPU acceleration, but CPU-only runs are supported.

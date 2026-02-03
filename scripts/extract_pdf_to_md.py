@@ -69,12 +69,19 @@ def run_nougat(
     text_md.write_text(mmd_files[0].read_text(encoding="utf-8"), encoding="utf-8")
 
 
-def run_docling(docling_cmd: str, pdf_path: Path, figures_md: Path, job_dir: Path) -> None:
+def run_docling(
+    docling_cmd: str,
+    pdf_path: Path,
+    figures_md: Path,
+    job_dir: Path,
+    docling_args: list[str],
+) -> None:
     docling_out = job_dir / "docling_out"
     docling_out.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
             docling_cmd,
+            *docling_args,
             "--to",
             "md",
             "--image-export-mode",
@@ -711,6 +718,11 @@ def main() -> int:
         help="Extra args passed to nougat (e.g., \"-m 0.1.0-base\").",
     )
     parser.add_argument(
+        "--docling-args",
+        default="",
+        help="Extra args passed to docling (e.g., \"--device cpu --page-batch-size 1\").",
+    )
+    parser.add_argument(
         "--merge-only",
         action="store_true",
         help="Reuse existing text.mmd and figures.md; skip Nougat/Docling execution.",
@@ -753,12 +765,13 @@ def main() -> int:
         nougat_cmd = require_command("nougat", args.nougat_cmd)
         docling_cmd = require_command("docling", args.docling_cmd)
         nougat_args = shlex.split(args.nougat_args) if args.nougat_args else []
+        docling_args = shlex.split(args.docling_args) if args.docling_args else []
 
         print("Running Nougat-OCR...", file=sys.stderr)
         run_nougat(nougat_cmd, pdf_path, text_md, job_dir, nougat_args)
 
         print("Running Docling...", file=sys.stderr)
-        run_docling(docling_cmd, pdf_path, figures_md, job_dir)
+        run_docling(docling_cmd, pdf_path, figures_md, job_dir, docling_args)
 
     if args.keep_base64:
         base_path = figures_md
