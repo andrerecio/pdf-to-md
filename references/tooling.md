@@ -35,6 +35,7 @@
 
 ## Performance
 - Both tools benefit from GPU acceleration, but CPU-only runs are supported.
+- If Nougat crashes on macOS with OpenMP shared-memory errors, run with `KMP_SHM_DISABLE=1 OMP_NUM_THREADS=1`.
 
 ## Optional: Markdown to LaTeX
 - Pandoc:

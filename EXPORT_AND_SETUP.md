@@ -180,6 +180,7 @@ Then:
 - If Docling fails with RT-DETR padding errors, re-run with `--docling-args "--device cpu --page-batch-size 1"`.
 - If Docling still fails, add `--pipeline legacy`, but note this can reduce figure extraction.
 - If Docling fails with NumPy 2.x / Torch errors, downgrade NumPy and OpenCV in the Docling venv: `pip install "numpy<2" "opencv-python==4.8.1.78"`.
+- If Nougat crashes on macOS with OpenMP shared-memory errors (e.g., `OMP: Error #179`), run with `KMP_SHM_DISABLE=1 OMP_NUM_THREADS=1`.
 
 ## Notes
 

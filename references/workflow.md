@@ -38,3 +38,4 @@ Option B: Symlink (keeps updates in sync)
 - Figures are appended at the end by default. Use `--inline-figures` to keep them inline; manual reordering is no longer required.
 - If Docling outputs base64 images, the script decodes them to `figures/` and rewrites Markdown paths unless `--keep-base64` is set.
 - GPU acceleration can significantly reduce runtime for both tools; CPU-only runs are supported but slower.
+- If Nougat crashes on macOS with OpenMP shared-memory errors, run with `KMP_SHM_DISABLE=1 OMP_NUM_THREADS=1`.

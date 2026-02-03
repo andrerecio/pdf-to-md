@@ -49,6 +49,7 @@ Use Nougat-OCR (base model by default) for text, math, tables, and verbatim bloc
 - Docling RT-DETR padding errors (batched image sizes): re-run with `--docling-args "--device cpu --page-batch-size 1"`.
 - If Docling still fails, add `--pipeline legacy`, but note this can reduce figure extraction.
 - Docling NumPy 2.x/Torch mismatch: in the Docling venv run `pip install "numpy<2" "opencv-python==4.8.1.78"`.
+- Nougat OpenMP SHM crash on macOS (e.g., `OMP: Error #179`): run with `KMP_SHM_DISABLE=1 OMP_NUM_THREADS=1` in the environment.
 
 ## Portability (install once per machine)
 Option A: Copy
