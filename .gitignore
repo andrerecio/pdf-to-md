@@ -2,6 +2,8 @@ venvs/
 outputs/
 .venv/
 venv/
+__pycache__/
+*.pyc
 .DS_Store
 .tmp.driveupload/
 dist/
