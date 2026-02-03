@@ -184,5 +184,6 @@ Then:
 ## Notes
 
 - The skill uses Nougat for text/math/tables and appends Docling figure blocks under a `## Figures` section by default. Use `--inline-figures` to keep figures inline and then blend in Nougat math/tables.
+- Nougat runs can take a long time on large PDFs; plan for 60+ minutes and set any automation timeouts accordingly.
 - Math normalization only happens when `--normalize-math` is used.
 - If you prefer base64 images in Markdown, pass `--keep-base64` to the extraction script.

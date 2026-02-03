@@ -10,6 +10,7 @@
    - Add `--normalize-math` if you want `\(...\)` and `\[...\]` converted to `$...$` and `$$...$$`.
    - Add `--inline-figures` to use Docling Markdown as the base so figures remain inline.
    - Add `--title`, `--author`, and `--date` to inject YAML metadata for Pandoc.
+   - Expect Nougat to run up to 60+ minutes; configure any orchestrator timeout to at least 60 minutes.
 3. The script runs Nougat first (base model by default) to extract text/math/tables, then runs Docling to extract figures and footnotes.
 4. `combined.md` is based on the Nougat Markdown with Docling figure blocks appended at the end under a `## Figures` section. Docling footnotes are inserted inline as Markdown footnotes; any unplaced footnotes are listed under `## Footnotes (Unplaced)` at the end.
    - If `--inline-figures` is set, `combined.md` starts from Docling Markdown (figures inline) and then inserts Nougat formulas/tables by alignment. Docling footnotes remain as-is in this mode.

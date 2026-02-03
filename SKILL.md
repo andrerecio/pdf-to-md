@@ -10,7 +10,7 @@ Use Nougat-OCR (base model by default) for text, math, tables, and verbatim bloc
 
 ## Workflow
 1. Check dependencies: run `~/.venvs/jupyter/bin/python scripts/check_deps.py` (use `--nougat-cmd`/`--docling-cmd` if needed).
-2. Extract and merge: run `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py <path/to.pdf>` (use `--nougat-cmd`/`--docling-cmd` if needed; on macOS start with `--docling-args "--device cpu --page-batch-size 1"` and only add `--pipeline legacy` if the standard pipeline fails). Add `--inline-figures` to keep figures inline.
+2. Extract and merge: run `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py <path/to.pdf>` (use `--nougat-cmd`/`--docling-cmd` if needed; on macOS start with `--docling-args "--device cpu --page-batch-size 1"` and only add `--pipeline legacy` if the standard pipeline fails). Add `--inline-figures` to keep figures inline. Plan for Nougat to run up to 60+ minutes; set any orchestration timeouts to at least 60 minutes.
 3. Review outputs in `outputs/<pdf-stem>/`.
 4. Optional LaTeX conversion:
    - One-shot: add `--to-latex` (optionally `--pandoc-cmd`) to the extract command (moves figures/tables inline and injects `\caption{}` in the LaTeX).
