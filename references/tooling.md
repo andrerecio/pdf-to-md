@@ -30,7 +30,8 @@
   - `docling --to md --image-export-mode embedded --output /path/to/output_dir input.pdf`
   - Output will be written as `/path/to/output_dir/<stem>.md`
   - If RT-DETR padding errors appear, retry with:
-    - `docling --device cpu --page-batch-size 1 --pipeline legacy --to md --image-export-mode embedded --output /path/to/output_dir input.pdf`
+    - `docling --device cpu --page-batch-size 1 --to md --image-export-mode embedded --output /path/to/output_dir input.pdf`
+  - If that still fails, add `--pipeline legacy`, but note this can reduce figure extraction.
 
 ## Performance
 - Both tools benefit from GPU acceleration, but CPU-only runs are supported.
