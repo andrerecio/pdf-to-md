@@ -10,7 +10,12 @@ Use Nougat-OCR (base model by default) for text, math, tables, and verbatim bloc
 
 ## Workflow
 1. Check dependencies: run `~/.venvs/jupyter/bin/python scripts/check_deps.py` (use `--nougat-cmd`/`--docling-cmd` if needed).
-2. Extract and merge: run `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py <path/to.pdf>` (use `--nougat-cmd`/`--docling-cmd` if needed; on macOS start with `--docling-args "--device cpu --page-batch-size 1"` and only add `--pipeline legacy` if the standard pipeline fails). Add `--inline-figures` to keep figures inline. Plan for Nougat to run up to 60+ minutes; set any orchestration timeouts to at least 60 minutes.
+2. Extract and merge: run `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py <path/to.pdf>` (use `--nougat-cmd`/`--docling-cmd` if needed; on macOS start with `--docling-args "--device cpu --page-batch-size 1"` and only add `--pipeline legacy` if the standard pipeline fails). Add `--inline-figures` to keep figures inline. Plan for Nougat to run up to 60+ minutes; set any orchestration timeouts to at least 60 minutes. If running via an agent and no timeout was specified, ask the user which timeout to use (recommend 60+ minutes).
+   - If you run it directly in your terminal, you don’t need to do anything — it will run until completion.
+   - If you run it via an agent/automation runner, that runner may have its own timeout. In that case:
+     - In this Codex CLI chat: if you ask me to run it, I’ll set the tool timeout to ≥ 60 minutes (e.g., 3,600,000 ms).
+     - In Cursor / task runners / scripts: set the command timeout to 60+ minutes (or disable timeouts).
+     - Avoid wrapping with a short `timeout` command; or set it to at least 3600 seconds.
 3. Review outputs in `outputs/<pdf-stem>/`.
 4. Optional LaTeX conversion:
    - One-shot: add `--to-latex` (optionally `--pandoc-cmd`) to the extract command (moves figures/tables inline and injects `\caption{}` in the LaTeX).
@@ -49,7 +54,7 @@ Use Nougat-OCR (base model by default) for text, math, tables, and verbatim bloc
 - Docling RT-DETR padding errors (batched image sizes): re-run with `--docling-args "--device cpu --page-batch-size 1"`.
 - If Docling still fails, add `--pipeline legacy`, but note this can reduce figure extraction.
 - Docling NumPy 2.x/Torch mismatch: in the Docling venv run `pip install "numpy<2" "opencv-python==4.8.1.78"`.
-- Nougat OpenMP SHM crash on macOS (e.g., `OMP: Error #179`): run with `KMP_SHM_DISABLE=1 OMP_NUM_THREADS=1` in the environment.
+- Nougat OpenMP SHM crash on macOS (e.g., `OMP: Error #179 ... SHM2` followed by SIGABRT): run with `KMP_SHM_DISABLE=1 OMP_NUM_THREADS=1` in the environment.
 
 ## Portability (install once per machine)
 Option A: Copy

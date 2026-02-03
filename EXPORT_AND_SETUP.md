@@ -180,11 +180,16 @@ Then:
 - If Docling fails with RT-DETR padding errors, re-run with `--docling-args "--device cpu --page-batch-size 1"`.
 - If Docling still fails, add `--pipeline legacy`, but note this can reduce figure extraction.
 - If Docling fails with NumPy 2.x / Torch errors, downgrade NumPy and OpenCV in the Docling venv: `pip install "numpy<2" "opencv-python==4.8.1.78"`.
-- If Nougat crashes on macOS with OpenMP shared-memory errors (e.g., `OMP: Error #179`), run with `KMP_SHM_DISABLE=1 OMP_NUM_THREADS=1`.
+- If Nougat crashes on macOS with OpenMP shared-memory errors (e.g., `OMP: Error #179 ... SHM2` followed by SIGABRT), run with `KMP_SHM_DISABLE=1 OMP_NUM_THREADS=1`.
 
 ## Notes
 
 - The skill uses Nougat for text/math/tables and appends Docling figure blocks under a `## Figures` section by default. Use `--inline-figures` to keep figures inline and then blend in Nougat math/tables.
 - Nougat runs can take a long time on large PDFs; plan for 60+ minutes and set any automation timeouts accordingly.
+- Direct terminal runs don’t need extra configuration; they run until completion.
+- Agent/automation runs may have their own timeouts:
+  - In Codex CLI chat: set tool timeout to ≥ 60 minutes (e.g., 3,600,000 ms).
+  - In Cursor / task runners / scripts: set command timeout to 60+ minutes (or disable timeouts).
+  - Avoid short `timeout` wrappers; use at least 3600 seconds.
 - Math normalization only happens when `--normalize-math` is used.
 - If you prefer base64 images in Markdown, pass `--keep-base64` to the extraction script.

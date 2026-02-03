@@ -10,7 +10,12 @@
    - Add `--normalize-math` if you want `\(...\)` and `\[...\]` converted to `$...$` and `$$...$$`.
    - Add `--inline-figures` to use Docling Markdown as the base so figures remain inline.
    - Add `--title`, `--author`, and `--date` to inject YAML metadata for Pandoc.
-   - Expect Nougat to run up to 60+ minutes; configure any orchestrator timeout to at least 60 minutes.
+   - Expect Nougat to run up to 60+ minutes; configure any orchestrator timeout to at least 60 minutes. If invoking via an agent and no timeout is specified, ask the user which timeout to use (recommend 60+ minutes).
+   - If you run it directly in your terminal, you don’t need to do anything — it will run until completion.
+   - If you run it via an agent/automation runner, that runner may have its own timeout. In that case:
+     - In this Codex CLI chat: if you ask me to run it, I’ll set the tool timeout to ≥ 60 minutes (e.g., 3,600,000 ms).
+     - In Cursor / task runners / scripts: set the command timeout to 60+ minutes (or disable timeouts).
+     - Avoid wrapping with a short `timeout` command; or set it to at least 3600 seconds.
 3. The script runs Nougat first (base model by default) to extract text/math/tables, then runs Docling to extract figures and footnotes.
 4. `combined.md` is based on the Nougat Markdown with Docling figure blocks appended at the end under a `## Figures` section. Docling footnotes are inserted inline as Markdown footnotes; any unplaced footnotes are listed under `## Footnotes (Unplaced)` at the end.
    - If `--inline-figures` is set, `combined.md` starts from Docling Markdown (figures inline) and then inserts Nougat formulas/tables by alignment. Docling footnotes remain as-is in this mode.
