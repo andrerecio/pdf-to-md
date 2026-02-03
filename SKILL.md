@@ -6,11 +6,11 @@ description: Extract structured Markdown from a single research PDF, preserving 
 # Pdf To Md
 
 ## Overview
-Use Nougat-OCR (base model by default) for text, math, tables, and verbatim blocks and Docling for figures + footnotes, then append figures and insert footnotes inline in the Nougat Markdown (unplaced footnotes are listed at the end). Math normalization is optional.
+Use Nougat-OCR (base model by default) for text, math, tables, and verbatim blocks and Docling for figures + footnotes. By default, figures are appended to the Nougat Markdown and Docling footnotes are inserted inline; use `--inline-figures` to keep figures in their original positions and blend in Nougat math/tables (Docling footnotes are left as-is). Math normalization is optional.
 
 ## Workflow
 1. Check dependencies: run `~/.venvs/jupyter/bin/python scripts/check_deps.py` (use `--nougat-cmd`/`--docling-cmd` if needed).
-2. Extract and merge: run `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py <path/to.pdf>` (use `--nougat-cmd`/`--docling-cmd` if needed; on macOS start with `--docling-args "--device cpu --page-batch-size 1"` and only add `--pipeline legacy` if the standard pipeline fails).
+2. Extract and merge: run `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py <path/to.pdf>` (use `--nougat-cmd`/`--docling-cmd` if needed; on macOS start with `--docling-args "--device cpu --page-batch-size 1"` and only add `--pipeline legacy` if the standard pipeline fails). Add `--inline-figures` to keep figures inline.
 3. Review outputs in `outputs/<pdf-stem>/`.
 4. Optional LaTeX conversion:
    - One-shot: add `--to-latex` (optionally `--pandoc-cmd`) to the extract command (moves figures/tables inline and injects `\caption{}` in the LaTeX).
@@ -20,6 +20,7 @@ Use Nougat-OCR (base model by default) for text, math, tables, and verbatim bloc
 ## Command example
 ```bash
 ~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py notes_rbc_quant_sp2024.pdf --output-dir outputs
+~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py notes_rbc_quant_sp2024.pdf --output-dir outputs --inline-figures
 ```
 
 ## Output layout
@@ -27,12 +28,13 @@ Use Nougat-OCR (base model by default) for text, math, tables, and verbatim bloc
 - `outputs/<stem>/figures.md` (Docling raw)
 - `outputs/<stem>/figures/` (decoded image files)
 - `outputs/<stem>/figures_decoded.md`
-- `outputs/<stem>/combined.md` (Nougat base text + Docling figures appended; footnotes inserted inline)
+- `outputs/<stem>/combined.md` (Nougat base text + Docling figures appended; footnotes inserted inline unless `--inline-figures` is used, which keeps Docling footnotes as-is)
 
 ## Options
 - `--keep-base64` keep Docling base64 images in Markdown (skip decoding).
 - `--merge-only` skip Nougat/Docling runs and reuse existing `text.mmd` + `figures.md`.
 - `--normalize-math` normalize `\(...\)` to `$...$` and `\[...\]` to `$$...$$`.
+- `--inline-figures` use Docling Markdown as the base so figures stay inline; Nougat math/tables are inserted by alignment.
 - `--to-latex` generate `combined_for_tex.md` and `combined.tex` via Pandoc.
 - `--pandoc-cmd` explicit path to the Pandoc executable (used with `--to-latex`).
 - `--nougat-cmd` explicit path to the Nougat executable.

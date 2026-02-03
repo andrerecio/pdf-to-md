@@ -607,7 +607,14 @@ def insert_tokens_by_alignment(content: str, tokens: list[Token], source_text: s
 
     for token in tokens:
         content = nonlocal_content[0]
-        if token.text in content:
+        if token.type == "formula":
+            if token.inline:
+                if token.text in content or normalize_inline(token.text) in content:
+                    continue
+            else:
+                if token.text in content or normalize_display(token.text) in content:
+                    continue
+        elif token.text in content:
             continue
 
         word_idx = bisect_right(nougat_starts, token.start) - 1
@@ -680,7 +687,14 @@ def find_insertion_point(content: str, left_words: list[str], right_words: list[
 def insert_tokens_by_context(content: str, tokens: list[Token], source_text: str) -> str:
     cursor = 0
     for token in tokens:
-        if token.text in content:
+        if token.type == "formula":
+            if token.inline:
+                if token.text in content or normalize_inline(token.text) in content:
+                    continue
+            else:
+                if token.text in content or normalize_display(token.text) in content:
+                    continue
+        elif token.text in content:
             continue
         left_words, right_words = context_words(source_text, token.start, token.end)
         insert_pos = find_insertion_point(content, left_words, right_words, cursor)
@@ -733,6 +747,11 @@ def main() -> int:
         help="Normalize \\[...\\] to $$...$$ and \\(...\\) to $...$ in combined.md.",
     )
     parser.add_argument(
+        "--inline-figures",
+        action="store_true",
+        help="Use Docling Markdown as the base so figures stay inline; insert Nougat formulas/tables by alignment.",
+    )
+    parser.add_argument(
         "--to-latex",
         action="store_true",
         help="Generate combined_for_tex.md and combined.tex via Pandoc.",
@@ -783,41 +802,63 @@ def main() -> int:
 
     nougat_text = text_md.read_text(encoding="utf-8")
     figures_text = base_path.read_text(encoding="utf-8")
-    figure_blocks = extract_figure_blocks(figures_text)
-    footnote_defs = extract_footnote_defs(figures_text)
-    footnote_markers = extract_footnote_markers(figures_text, footnote_defs)
+    if args.inline_figures:
+        combined_text = figures_text.rstrip()
+        tokens = extract_tokens(nougat_text)
+        formula_tokens = [token for token in tokens if token.type == "formula"]
+        combined_text, inserted = replace_placeholders_with_formulas(combined_text, formula_tokens)
+        if inserted:
+            remaining_tokens: list[Token] = []
+            consumed = 0
+            for token in tokens:
+                if token.type == "formula" and consumed < inserted:
+                    consumed += 1
+                    continue
+                remaining_tokens.append(token)
+        else:
+            remaining_tokens = tokens
+        combined_text = insert_tokens_by_alignment(combined_text, remaining_tokens, nougat_text)
+        combined_text = insert_tokens_by_context(combined_text, remaining_tokens, nougat_text)
+    else:
+        figure_blocks = extract_figure_blocks(figures_text)
+        footnote_defs = extract_footnote_defs(figures_text)
+        footnote_markers = extract_footnote_markers(figures_text, footnote_defs)
 
-    combined_text = nougat_text.rstrip()
-    used_footnotes: dict[str, str] = {}
-    if footnote_markers:
-        insertions: list[tuple[int, int, str, str]] = []
-        for num, ctx in footnote_markers.items():
-            if f"[^{num}]" in combined_text:
+        combined_text = nougat_text.rstrip()
+        used_footnotes: dict[str, str] = {}
+        if footnote_markers:
+            insertions: list[tuple[int, int, str, str]] = []
+            for num, ctx in footnote_markers.items():
+                if f"[^{num}]" in combined_text:
+                    used_footnotes[num] = footnote_defs.get(num, "")
+                    continue
+                loc = find_replacement(combined_text, ctx, num)
+                if loc is None:
+                    continue
+                start, end = loc
+                marker = f"[^{num}]"
+                if end < len(combined_text) and combined_text[end:end + 1].isalnum():
+                    marker += " "
+                insertions.append((start, end, marker, num))
+
+            for start, end, marker, num in sorted(insertions, key=lambda x: x[0], reverse=True):
+                combined_text = combined_text[:start] + marker + combined_text[end:]
                 used_footnotes[num] = footnote_defs.get(num, "")
-                continue
-            loc = find_replacement(combined_text, ctx, num)
-            if loc is None:
-                continue
-            start, end = loc
-            marker = f"[^{num}]"
-            if end < len(combined_text) and combined_text[end:end + 1].isalnum():
-                marker += " "
-            insertions.append((start, end, marker, num))
-
-        for start, end, marker, num in sorted(insertions, key=lambda x: x[0], reverse=True):
-            combined_text = combined_text[:start] + marker + combined_text[end:]
-            used_footnotes[num] = footnote_defs.get(num, "")
-    if figure_blocks:
-        combined_text = combined_text.rstrip() + "\n\n## Figures\n\n" + "\n\n".join(figure_blocks)
-    if used_footnotes:
-        ordered = sorted(used_footnotes.items(), key=lambda x: int(x[0]))
-        defs = [f"[^{num}]: {body}".strip() for num, body in ordered if body]
-        if defs:
-            combined_text = combined_text.rstrip() + "\n\n" + "\n\n".join(defs)
-    if footnote_defs:
-        unplaced = [footnote_defs[num] for num in sorted(footnote_defs, key=lambda x: int(x)) if num not in used_footnotes]
-        if unplaced:
-            combined_text = combined_text.rstrip() + "\n\n## Footnotes (Unplaced)\n\n" + "\n\n".join(unplaced)
+        if figure_blocks:
+            combined_text = combined_text.rstrip() + "\n\n## Figures\n\n" + "\n\n".join(figure_blocks)
+        if used_footnotes:
+            ordered = sorted(used_footnotes.items(), key=lambda x: int(x[0]))
+            defs = [f"[^{num}]: {body}".strip() for num, body in ordered if body]
+            if defs:
+                combined_text = combined_text.rstrip() + "\n\n" + "\n\n".join(defs)
+        if footnote_defs:
+            unplaced = [
+                footnote_defs[num]
+                for num in sorted(footnote_defs, key=lambda x: int(x))
+                if num not in used_footnotes
+            ]
+            if unplaced:
+                combined_text = combined_text.rstrip() + "\n\n## Footnotes (Unplaced)\n\n" + "\n\n".join(unplaced)
     if args.normalize_math:
         combined_text = normalize_bracket_math(combined_text)
         combined_text = normalize_inline_math(combined_text)

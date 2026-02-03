@@ -183,6 +183,6 @@ Then:
 
 ## Notes
 
-- The skill uses Nougat for text/math/tables and appends Docling figure blocks under a `## Figures` section. Docling footnotes are inserted inline as Markdown footnotes; any unplaced footnotes are appended under `## Footnotes (Unplaced)`.
+- The skill uses Nougat for text/math/tables and appends Docling figure blocks under a `## Figures` section by default. Use `--inline-figures` to keep figures inline and then blend in Nougat math/tables.
 - Math normalization only happens when `--normalize-math` is used.
 - If you prefer base64 images in Markdown, pass `--keep-base64` to the extraction script.

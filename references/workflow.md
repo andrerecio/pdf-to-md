@@ -8,8 +8,10 @@
    - `--docling-args` lets you pass flags like `--device cpu --page-batch-size 1` (useful for macOS or RT-DETR padding errors). Use `--pipeline legacy` only as a fallback; it can reduce figure extraction.
    - Use `--merge-only` to reuse existing `text.mmd` and `figures.md` without re-running OCR/Docling (the PDF itself does not need to exist; its stem is used to locate outputs).
    - Add `--normalize-math` if you want `\(...\)` and `\[...\]` converted to `$...$` and `$$...$$`.
+   - Add `--inline-figures` to use Docling Markdown as the base so figures remain inline.
 3. The script runs Nougat first (base model by default) to extract text/math/tables, then runs Docling to extract figures and footnotes.
 4. `combined.md` is based on the Nougat Markdown with Docling figure blocks appended at the end under a `## Figures` section. Docling footnotes are inserted inline as Markdown footnotes; any unplaced footnotes are listed under `## Footnotes (Unplaced)` at the end.
+   - If `--inline-figures` is set, `combined.md` starts from Docling Markdown (figures inline) and then inserts Nougat formulas/tables by alignment. Docling footnotes remain as-is in this mode.
 5. If `--normalize-math` is set, the script converts `\\[ ... \\]` to `$$ ... $$` and `\\( ... \\)` to `$ ... $`.
 6. Review `outputs/<stem>/combined.md` and the figures directory.
 7. Optional LaTeX conversion:
@@ -31,6 +33,6 @@ Option B: Symlink (keeps updates in sync)
 3. `ln -s ~/dev/pdf-to-md-skill $CODEX_HOME/skills/pdf-to-md`
 
 ## Notes
-- Figures are appended at the end. For inline placement, manually move figure blocks into the desired sections.
+- Figures are appended at the end by default. Use `--inline-figures` to keep them inline; manual reordering is no longer required.
 - If Docling outputs base64 images, the script decodes them to `figures/` and rewrites Markdown paths unless `--keep-base64` is set.
 - GPU acceleration can significantly reduce runtime for both tools; CPU-only runs are supported but slower.

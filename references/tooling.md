@@ -42,6 +42,9 @@
 - One-shot (uses Pandoc):
   - `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py input.pdf --output-dir outputs --to-latex`
 
+## Inline figures
+- To keep figures inline, pass `--inline-figures` to `scripts/extract_pdf_to_md.py`; this uses Docling Markdown as the base and inserts Nougat math/tables by alignment.
+
 ## Skill portability (install once per machine)
 Option A: Copy
 
