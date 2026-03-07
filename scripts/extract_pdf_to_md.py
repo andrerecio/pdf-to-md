@@ -615,10 +615,10 @@ def insert_tokens_by_alignment(content: str, tokens: list[Token], source_text: s
     def replace_near_table(pos: int, table_text: str) -> bool:
         if not table_spans:
             return False
-        nearest = min(table_spans, key=lambda s: abs(s[0] - pos))
-        if abs(nearest[0] - pos) > 400:
+        nearest = min(table_spans, key=lambda s: abs(s.start - pos))
+        if abs(nearest.start - pos) > 400:
             return False
-        nonlocal_content[0] = nonlocal_content[0][:nearest[0]] + table_text + nonlocal_content[0][nearest[1]:]
+        nonlocal_content[0] = nonlocal_content[0][:nearest.start] + table_text + nonlocal_content[0][nearest.end:]
         return True
 
     nonlocal_content = [content]
