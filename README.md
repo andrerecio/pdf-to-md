@@ -14,4 +14,4 @@ You can also run the Python scripts directly from your terminal:
 python scripts/extract_pdf_to_md.py input.pdf --output-dir outputs
 ```
 
-The merged result is written to `outputs/<pdf-name>/combined.md`.
+The merged result is written to `outputs/<pdf-name>/combined.md`. See documentation for more options
