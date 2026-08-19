@@ -2,24 +2,54 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
+import platform
 import re
 import shutil
 import subprocess
 import sys
-import shlex
+import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from bisect import bisect_right
 from difflib import SequenceMatcher
+from typing import Any
+from urllib.parse import unquote
 
-from parse_docling_figures import decode_docling_markdown
-from prepare_md_for_latex import fix_fences
+from check_deps import package_version_from_command
+from parse_docling_figures import decode_docling_markdown, normalize_docling_markdown
+from prepare_md_for_latex import fix_fences, validate_latex_input
+
+
+V2_VERSION = "2"
+# This changes merge/normalization behavior only.  It deliberately does not
+# participate in the expensive Nougat/Docling cache keys.
+MERGE_SCHEMA_VERSION = "3"
+PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
+    "fast": {
+        "nougat_args": ["-m", "0.1.0-small", "--batchsize", "1"],
+        "docling_args": ["--page-batch-size", "1", "--num-threads", "2"],
+    },
+    "quality": {
+        "nougat_args": ["-m", "0.1.0-base"],
+        "docling_args": ["--page-batch-size", "4", "--num-threads", "4"],
+    },
+}
+
+
+def executable_file(path: Path) -> bool:
+    return path.is_file() and (os.name == "nt" or os.access(path, os.X_OK))
 
 
 def find_command(cmd: str) -> str | None:
     bin_dir = Path(sys.executable).parent
     candidate = bin_dir / cmd
-    if candidate.exists():
+    if executable_file(candidate):
         return str(candidate)
     return shutil.which(cmd)
 
@@ -27,7 +57,7 @@ def find_command(cmd: str) -> str | None:
 def require_command(cmd: str, override: str | None) -> str:
     if override:
         path = Path(override).expanduser()
-        if not path.exists():
+        if not executable_file(path):
             print(f"Missing required command at path: {path}", file=sys.stderr)
             raise SystemExit(1)
         return str(path)
@@ -39,10 +69,120 @@ def require_command(cmd: str, override: str | None) -> str:
     return resolved
 
 
-def run_cmd(cmd: list[str], stdout_path: Path) -> None:
-    stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    with stdout_path.open("w", encoding="utf-8") as handle:
-        subprocess.run(cmd, check=True, stdout=handle)
+def now_utc() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def safe_stem(path: Path) -> str:
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", path.stem).strip("._")
+    return stem or "document"
+
+
+def atomic_copy(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=destination.parent, prefix=f".{destination.name}.", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            with source.open("rb") as source_handle:
+                shutil.copyfileobj(source_handle, handle)
+        os.replace(temporary, destination)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(text)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def reset_directory(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def cleanup_staging_dir(path: Path) -> None:
+    shutil.rmtree(path, ignore_errors=True)
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
+
+
+def write_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            temporary = Path(handle.name)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def command_version(command: str, package: str) -> str:
+    package_version = package_version_from_command(command, package)
+    if package_version:
+        return package_version
+    try:
+        result = subprocess.run(
+            [command, "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    output = (result.stdout or result.stderr).strip()
+    return output.splitlines()[0][:500] if output else "unknown"
+
+
+def apply_profile_args(profile: str, extra: list[str], key: str) -> list[str]:
+    return [*PROFILE_DEFAULTS[profile][key], *extra]
+
+
+def find_single_output(directory: Path, suffix: str, input_stem: str) -> Path:
+    expected = directory / f"{input_stem}{suffix}"
+    if expected.exists():
+        return expected
+    candidates = sorted(directory.glob(f"*{suffix}"))
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise RuntimeError(f"No {suffix} output found in {directory}.")
+    names = ", ".join(candidate.name for candidate in candidates)
+    raise RuntimeError(f"Expected one {suffix} output in {directory}; found: {names}")
 
 
 def run_nougat(
@@ -52,21 +192,22 @@ def run_nougat(
     job_dir: Path,
     nougat_args: list[str],
 ) -> None:
-    run_cmd([nougat_cmd, *nougat_args, str(pdf_path)], text_md)
-    if text_md.exists() and text_md.stat().st_size > 0:
-        return
-
-    tmp_out = job_dir / "nougat_out"
-    tmp_out.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [nougat_cmd, *nougat_args, str(pdf_path), "--markdown", "--out", str(tmp_out)],
-        check=True,
-    )
-    mmd_files = list(tmp_out.glob("*.mmd"))
-    if not mmd_files:
-        raise RuntimeError("Nougat did not produce a .mmd output file.")
-
-    text_md.write_text(mmd_files[0].read_text(encoding="utf-8"), encoding="utf-8")
+    stage_dir = job_dir / ".staging" / "nougat"
+    reset_directory(stage_dir)
+    command = [
+        nougat_cmd,
+        *nougat_args,
+        str(pdf_path),
+        "--markdown",
+        "--out",
+        str(stage_dir),
+    ]
+    subprocess.run(command, check=True)
+    output = find_single_output(stage_dir, ".mmd", pdf_path.stem)
+    if output.stat().st_size == 0:
+        raise RuntimeError("Nougat produced an empty Markdown output.")
+    atomic_copy(output, text_md)
+    cleanup_staging_dir(stage_dir)
 
 
 def run_docling(
@@ -75,27 +216,64 @@ def run_docling(
     figures_md: Path,
     job_dir: Path,
     docling_args: list[str],
-) -> None:
-    docling_out = job_dir / "docling_out"
-    docling_out.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            docling_cmd,
-            *docling_args,
-            "--to",
-            "md",
-            "--image-export-mode",
-            "embedded",
-            "--output",
-            str(docling_out),
-            str(pdf_path),
-        ],
-        check=True,
-    )
-    md_files = list(docling_out.glob("*.md"))
-    if not md_files:
-        raise RuntimeError("Docling did not produce a .md output file.")
-    figures_md.write_text(md_files[0].read_text(encoding="utf-8"), encoding="utf-8")
+    image_mode: str,
+) -> tuple[Path, str]:
+    stage_dir = job_dir / ".staging" / "docling"
+
+    def run_once(mode: str, include_image_mode: bool = True) -> None:
+        reset_directory(stage_dir)
+        command = [docling_cmd, *docling_args, "--to", "md"]
+        if include_image_mode:
+            command.extend(["--image-export-mode", mode])
+        command.extend(["--output", str(stage_dir), str(pdf_path)])
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        if result.returncode:
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                command,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
+
+        output = find_single_output(stage_dir, ".md", pdf_path.stem)
+        if output.stat().st_size == 0:
+            raise RuntimeError("Docling produced an empty Markdown output.")
+
+    actual_mode = image_mode
+    try:
+        run_once(image_mode)
+    except (RuntimeError, subprocess.CalledProcessError):
+        if image_mode != "referenced":
+            raise
+        print(
+            "Docling referenced-image export failed; retrying with embedded images.",
+            file=sys.stderr,
+        )
+        actual_mode = "embedded"
+        try:
+            run_once(actual_mode)
+        except subprocess.CalledProcessError as error:
+            error_text = f"{error.output or ''}\n{error.stderr or ''}".lower()
+            if "--image-export-mode" not in error_text:
+                raise
+            print(
+                "Docling does not recognize --image-export-mode; using its embedded default.",
+                file=sys.stderr,
+            )
+            run_once(actual_mode, include_image_mode=False)
+    output = find_single_output(stage_dir, ".md", pdf_path.stem)
+
+    assets_dir = job_dir / "docling_assets"
+    reset_directory(assets_dir)
+    # Preserve only assets referenced by Markdown.  In particular, never let
+    # absolute paths back into the cached output after .staging is removed.
+    normalize_docling_markdown(output, figures_md, assets_dir, stage_dir)
+    cleanup_staging_dir(stage_dir)
+    return figures_md, actual_mode
 
 
 FORMULA_RE = re.compile(
@@ -116,11 +294,18 @@ STRUCTURED_RE = re.compile(
     r"\$\$|\\\[|\\\(|\\begin\{|```|'''|\\begin\{tabular\}",
     re.DOTALL,
 )
-IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
+IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^\n]*\)(?=\s*$)", re.MULTILINE)
+MARKDOWN_IMAGE_TARGET_RE = re.compile(
+    r"!\[[^\]]*\]\((?P<target>[^\n]*)\)(?=\s*$)", re.MULTILINE
+)
 CAPTION_RE = re.compile(r"^(fig(?:ure)?\.?)\b", re.IGNORECASE)
 TABLE_RE = re.compile(r"^(table\.?)\b", re.IGNORECASE)
+TABLE_SEPARATOR_RE = re.compile(
+    r"^\s*\|?\s*:?-{1,}:?\s*(?:\|\s*:?-{1,}:?\s*)+\|?\s*$"
+)
 HEADING_RE = re.compile(r"^#{1,6}\s")
 FIGURE_CAP_RE = re.compile(r"^Figure\s+\d+:\s+(.+)$")
+CANONICAL_FIGURE_CAP_RE = re.compile(r"^(?:fig(?:ure)?\.?\s*)\d+\s*[:.\-–]\s*(.+)$", re.IGNORECASE)
 TABLE_CAP_RE = re.compile(r"^Table\s+\d+:\s+(.+)$")
 FOOTNOTE_START_RE = re.compile(r"^(?P<num>\d+)[\).]?\s+(?P<body>.+)")
 
@@ -151,7 +336,7 @@ def extract_markdown_tables(text: str, occupied: list[tuple[int, int]]) -> list[
     while i < len(lines) - 1:
         line = lines[i]
         next_line = lines[i + 1]
-        if "|" in line and re.match(r"^\s*\|?[\s:-]+\|[\s:-|]*$", next_line):
+        if "|" in line and TABLE_SEPARATOR_RE.match(next_line):
             start = line_starts[i]
             j = i + 2
             while j < len(lines) and "|" in lines[j]:
@@ -310,6 +495,58 @@ def extract_figure_blocks(text: str) -> list[str]:
     return blocks
 
 
+@dataclass
+class FigureBlock:
+    markdown: str
+    source_offset: int
+
+
+def canonical_figure_caption(caption: str) -> str:
+    """Leave figure numbering to Pandoc instead of duplicating its caption prefix."""
+
+    match = CANONICAL_FIGURE_CAP_RE.match(caption.strip())
+    return match.group(1).strip() if match else caption.strip()
+
+
+def extract_captioned_figures(text: str) -> list[FigureBlock]:
+    """Return just the durable image and its caption, never Docling prose."""
+
+    lines = text.splitlines(keepends=True)
+    offsets: list[int] = []
+    position = 0
+    for line in lines:
+        offsets.append(position)
+        position += len(line)
+
+    figures: list[FigureBlock] = []
+    for index, line in enumerate(lines):
+        image = IMAGE_RE.search(line)
+        if image is None:
+            continue
+        caption = ""
+        # Docling occasionally leaves one or two OCR artefact lines between a
+        # figure caption and its image.  Use the closest nearby caption, but do
+        # not cross another image or heading.
+        for before in range(index - 1, max(-1, index - 13), -1):
+            candidate = lines[before].strip()
+            if IMAGE_RE.search(lines[before]) or HEADING_RE.match(candidate):
+                break
+            if CAPTION_RE.match(candidate) and not TABLE_RE.match(candidate):
+                caption = candidate
+                break
+        if not caption:
+            after = index + 1
+            while after < len(lines) and not lines[after].strip():
+                after += 1
+            if after < len(lines) and CAPTION_RE.match(lines[after].strip()) and not TABLE_RE.match(lines[after].strip()):
+                caption = lines[after].strip()
+        alt = image.group(0).split("](", 1)[0][2:]
+        caption = canonical_figure_caption(caption or alt or "Figure")
+        target = image.group(0).split("](", 1)[1].rsplit(")", 1)[0]
+        figures.append(FigureBlock(f"![{caption}]({target})", offsets[index] + image.start()))
+    return figures
+
+
 def extract_footnote_defs(text: str) -> dict[str, str]:
     lines = text.splitlines()
     foot_defs: dict[str, str] = {}
@@ -331,9 +568,51 @@ def extract_footnote_defs(text: str) -> dict[str, str]:
         body = m.group("body").strip()
         block = [body] if body else []
         j = i + 1
+        # First consume the actual footnote paragraph.  A blank line normally
+        # ends it.  An unfinished footnote can continue after a page break,
+        # figures, and intervening body paragraphs, but only as a lower-case
+        # orphan paragraph nearby; Docling body prose normally starts a new
+        # sentence/paragraph with an upper-case character.
         while j < len(lines) and lines[j].strip():
-            block.append(lines[j].strip())
+            candidate = lines[j].strip()
+            if HEADING_RE.match(candidate) or FOOTNOTE_START_RE.match(candidate):
+                break
+            block.append(candidate)
             j += 1
+        initial_complete = bool(block and re.search(r"[.!?][\"')\]]*$", block[-1]))
+        if not initial_complete:
+            scanned = 0
+            intervening_prose = 0
+            while j < len(lines) and scanned < 28 and intervening_prose <= 2:
+                candidate = lines[j].strip()
+                j += 1
+                scanned += 1
+                if not candidate:
+                    continue
+                if HEADING_RE.match(candidate) or FOOTNOTE_START_RE.match(candidate):
+                    break
+                if (
+                    IMAGE_RE.search(candidate)
+                    or CAPTION_RE.match(candidate)
+                    or TABLE_RE.match(candidate)
+                    or candidate.startswith(("|", "<!--", "```", "\\begin{"))
+                ):
+                    continue
+                if candidate[0].islower() and len(re.findall(r"[A-Za-z]+", candidate)) >= 4:
+                    block.append(candidate)
+                    # A wrapped continuation is allowed only until it reaches
+                    # an ordinary sentence terminator.
+                    while not re.search(r"[.!?][\"')\]]*$", block[-1]) and j < len(lines):
+                        continuation = lines[j].strip()
+                        j += 1
+                        if not continuation or HEADING_RE.match(continuation) or FOOTNOTE_START_RE.match(continuation):
+                            break
+                        if continuation[0].islower():
+                            block.append(continuation)
+                        else:
+                            break
+                    break
+                intervening_prose += 1
         block_text = " ".join(s for s in block if s).strip()
 
         word_count = len(re.findall(r"[A-Za-z]+", block_text))
@@ -379,6 +658,7 @@ def line_at(text: str, pos: int) -> str:
 
 def find_replacement(text: str, context_words: list[str], num: str) -> tuple[int, int] | None:
     pattern = r"\b" + r"\W+".join(map(re.escape, context_words)) + r"\b"
+    fallback_locations: list[tuple[int, int]] = []
     for m in re.finditer(pattern, text, flags=re.IGNORECASE):
         pos = m.end()
         line = line_at(text, pos).lstrip()
@@ -394,8 +674,63 @@ def find_replacement(text: str, context_words: list[str], num: str) -> tuple[int
             return start, end
         while pos < len(text) and text[pos] in ".;,!?":
             pos += 1
-        return pos, pos
-    return None
+        fallback_locations.append((pos, pos))
+    # Without an explicit marker, insertion is safe only when the surrounding
+    # prose appears exactly once.  Repeated context is intentionally left
+    # unplaced rather than attaching a footnote to the wrong sentence.
+    return fallback_locations[0] if len(fallback_locations) == 1 else None
+
+
+def footnote_definition_is_canonical_prose(nougat_text: str, definition: str) -> bool:
+    """Reject list items that Docling's loose footnote heuristic misclassifies."""
+
+    definition_words = re.findall(r"[A-Za-z0-9]+", definition.lower())
+    if len(definition_words) < 6:
+        return False
+    # Six consecutive normalized words are distinctive enough to identify a
+    # duplicated numbered list item without suppressing a genuine footnote.
+    prefix = definition_words[:8]
+    nougat_words = re.findall(r"[A-Za-z0-9]+", nougat_text.lower())
+    width = min(8, len(prefix))
+    return any(nougat_words[index:index + width] == prefix[:width] for index in range(len(nougat_words) - width + 1))
+
+
+def apply_footnotes(nougat_text: str, docling_text: str) -> tuple[str, dict[str, str], dict[str, str]]:
+    """Reconstruct Docling footnotes in the canonical Nougat narrative."""
+
+    definitions = {
+        number: definition
+        for number, definition in extract_footnote_defs(docling_text).items()
+        if not footnote_definition_is_canonical_prose(nougat_text, definition)
+    }
+    # A complete Nougat definition is already authoritative.  A marker alone
+    # is different: it still needs the Docling definition appended below.
+    definitions = {
+        number: definition
+        for number, definition in definitions.items()
+        if not re.search(rf"(?m)^\[\^{re.escape(number)}\]:", nougat_text)
+    }
+    markers = extract_footnote_markers(docling_text, definitions)
+    combined = nougat_text.rstrip()
+    placed: dict[str, str] = {}
+    edits: list[tuple[int, int, str]] = []
+    for number, context in markers.items():
+        body = definitions[number]
+        if f"[^{number}]" in combined:
+            placed[number] = body
+            continue
+        location = find_replacement(combined, context, number)
+        if location is None:
+            continue
+        start, end = location
+        marker = f"[^{number}]"
+        if end < len(combined) and combined[end:end + 1].isalnum():
+            marker += " "
+        edits.append((start, end, marker))
+        placed[number] = body
+    combined = apply_edits(combined, edits)
+    unplaced = {number: body for number, body in definitions.items() if number not in placed}
+    return combined, placed, unplaced
 
 
 def extract_figure_images_from_section(lines: list[str]) -> list[str]:
@@ -424,6 +759,11 @@ def split_caption_with_next_line(caption: str, next_line: str) -> tuple[str, str
 
 
 def postprocess_latex(latex_text: str) -> str:
+    # Captioned Markdown images are now native Pandoc figures.  The old
+    # postprocessor removed the Figures section and reattached images by order,
+    # which was the source of duplicate/missing captions.
+    return latex_text
+
     lines = latex_text.splitlines()
 
     fig_start = None
@@ -531,18 +871,29 @@ def postprocess_latex(latex_text: str) -> str:
 def mask_spans(text: str, spans: list[tuple[int, int]]) -> str:
     if not spans:
         return text
-    chars = list(text)
-    for start, end in spans:
-        for i in range(start, end):
-            chars[i] = " "
-    return "".join(chars)
+    masked: list[str] = []
+    cursor = 0
+    for start, end in sorted(spans):
+        if end <= cursor:
+            continue
+        start = max(start, cursor)
+        masked.append(text[cursor:start])
+        masked.append(" " * (end - start))
+        cursor = end
+    masked.append(text[cursor:])
+    return "".join(masked)
 
 
 def word_positions(text: str) -> list[tuple[int, int]]:
     return [(m.start(), m.end()) for m in re.finditer(r"[A-Za-z0-9]+", text)]
 
 
-def build_word_map(nougat_text: str, docling_text: str, nougat_spans: list[tuple[int, int]], docling_spans: list[tuple[int, int]]) -> tuple[list[tuple[int, int]], list[tuple[int, int]], list[tuple[int, int, int]]]:
+def build_word_map(
+    nougat_text: str,
+    docling_text: str,
+    nougat_spans: list[tuple[int, int]],
+    docling_spans: list[tuple[int, int]],
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]], list[tuple[int, int, int]]]:
     masked_nougat = mask_spans(nougat_text, nougat_spans)
     masked_docling = mask_spans(docling_text, docling_spans)
 
@@ -557,29 +908,41 @@ def build_word_map(nougat_text: str, docling_text: str, nougat_spans: list[tuple
     return nougat_positions, docling_positions, blocks
 
 
-def map_word_index(word_idx: int, blocks: list[tuple[int, int, int]]) -> int | None:
-    for a, b, size in blocks:
-        if a <= word_idx < a + size:
+def map_word_index(
+    word_idx: int,
+    blocks: list[tuple[int, int, int]],
+    block_starts: list[int] | None = None,
+) -> int | None:
+    if not blocks:
+        return None
+    starts = block_starts if block_starts is not None else [a for a, _, _ in blocks]
+    block_idx = bisect_right(starts, word_idx) - 1
+    if block_idx >= 0:
+        a, b, size = blocks[block_idx]
+        if word_idx < a + size:
             return b + (word_idx - a)
-
-    prev = None
-    next_block = None
-    for a, b, size in blocks:
-        if a + size <= word_idx:
-            if prev is None or a + size > prev[0] + prev[2]:
-                prev = (a, b, size)
-        elif a > word_idx and next_block is None:
-            next_block = (a, b, size)
-
-    if prev is not None:
-        return prev[1] + prev[2]
-    if next_block is not None:
-        return next_block[1]
-    return None
+        return b + size
+    return blocks[0][1]
 
 
 def spans_from_regex(text: str, regex: re.Pattern[str]) -> list[tuple[int, int]]:
     return [(m.start(), m.end()) for m in regex.finditer(text)]
+
+
+def apply_edits(content: str, edits: list[tuple[int, int, str]]) -> str:
+    """Apply non-overlapping replacements/insertions in one forward pass."""
+    if not edits:
+        return content
+    output: list[str] = []
+    cursor = 0
+    for start, end, replacement in sorted(edits, key=lambda edit: (edit[0], edit[1])):
+        if start < cursor:
+            continue
+        output.append(content[cursor:start])
+        output.append(replacement)
+        cursor = end
+    output.append(content[cursor:])
+    return "".join(output)
 
 
 def insert_tokens_by_alignment(content: str, tokens: list[Token], source_text: str) -> str:
@@ -608,23 +971,20 @@ def insert_tokens_by_alignment(content: str, tokens: list[Token], source_text: s
         return content
 
     nougat_starts = [s for s, _ in nougat_positions]
-    insertions: list[tuple[int, str]] = []
+    block_starts = [a for a, _, _ in blocks]
+    edits: list[tuple[int, int, str]] = []
 
     table_spans = extract_markdown_tables(content, [])
 
-    def replace_near_table(pos: int, table_text: str) -> bool:
+    def replacement_near_table(pos: int, table_text: str) -> tuple[int, int, str] | None:
         if not table_spans:
-            return False
+            return None
         nearest = min(table_spans, key=lambda s: abs(s.start - pos))
         if abs(nearest.start - pos) > 400:
-            return False
-        nonlocal_content[0] = nonlocal_content[0][:nearest.start] + table_text + nonlocal_content[0][nearest.end:]
-        return True
-
-    nonlocal_content = [content]
+            return None
+        return nearest.start, nearest.end, table_text
 
     for token in tokens:
-        content = nonlocal_content[0]
         if token.type == "formula":
             if token.inline:
                 if token.text in content or normalize_inline(token.text) in content:
@@ -639,7 +999,7 @@ def insert_tokens_by_alignment(content: str, tokens: list[Token], source_text: s
         if word_idx < 0:
             word_idx = 0
 
-        doc_idx = map_word_index(word_idx, blocks)
+        doc_idx = map_word_index(word_idx, blocks, block_starts)
         if doc_idx is None or doc_idx >= len(docling_positions):
             continue
 
@@ -663,21 +1023,13 @@ def insert_tokens_by_alignment(content: str, tokens: list[Token], source_text: s
         else:
             insert_text = "\n\n" + token.text.strip() + "\n\n"
         if token.type == "latex_table":
-            if replace_near_table(insert_pos, insert_text):
+            replacement = replacement_near_table(insert_pos, insert_text)
+            if replacement is not None:
+                edits.append(replacement)
                 continue
-        insertions.append((insert_pos, insert_text))
+        edits.append((insert_pos, insert_pos, insert_text))
 
-    content = nonlocal_content[0]
-    for pos, insert_text in sorted(insertions, key=lambda x: x[0], reverse=True):
-        content = content[:pos] + insert_text + content[pos:]
-
-    return content
-
-
-def context_words(text: str, start: int, end: int, n: int = 6) -> tuple[list[str], list[str]]:
-    before_words = re.findall(r"[A-Za-z0-9]+", text[:start])
-    after_words = re.findall(r"[A-Za-z0-9]+", text[end:])
-    return before_words[-n:], after_words[:n]
+    return apply_edits(content, edits)
 
 
 def find_insertion_point(content: str, left_words: list[str], right_words: list[str], start_pos: int) -> int | None:
@@ -703,6 +1055,18 @@ def find_insertion_point(content: str, left_words: list[str], right_words: list[
 
 
 def insert_tokens_by_context(content: str, tokens: list[Token], source_text: str) -> str:
+    source_matches = list(re.finditer(r"[A-Za-z0-9]+", source_text))
+    source_starts = [match.start() for match in source_matches]
+    source_ends = [match.end() for match in source_matches]
+
+    def indexed_context(start: int, end: int, n: int = 6) -> tuple[list[str], list[str]]:
+        left_end = bisect_right(source_ends, start)
+        right_start = bisect_right(source_starts, end - 1)
+        left = [match.group(0) for match in source_matches[max(0, left_end - n):left_end]]
+        right = [match.group(0) for match in source_matches[right_start:right_start + n]]
+        return left, right
+
+    edits: list[tuple[int, int, str]] = []
     cursor = 0
     for token in tokens:
         if token.type == "formula":
@@ -714,7 +1078,7 @@ def insert_tokens_by_context(content: str, tokens: list[Token], source_text: str
                     continue
         elif token.text in content:
             continue
-        left_words, right_words = context_words(source_text, token.start, token.end)
+        left_words, right_words = indexed_context(token.start, token.end)
         insert_pos = find_insertion_point(content, left_words, right_words, cursor)
         if insert_pos is None:
             continue
@@ -731,182 +1095,689 @@ def insert_tokens_by_context(content: str, tokens: list[Token], source_text: str
                 insert_text = "\n\n" + normalize_display(token.text) + "\n\n"
         else:
             insert_text = "\n\n" + token.text.strip() + "\n\n"
-        content = content[:insert_pos] + insert_text + content[insert_pos:]
-        cursor = insert_pos + len(insert_text)
-    return content
+        edits.append((insert_pos, insert_pos, insert_text))
+        cursor = insert_pos
+    return apply_edits(content, edits)
 
 
-def main() -> int:
+def cache_digest(value: dict[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def nonempty_file(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size > 0
+
+
+def docling_assets_complete(source_path: Path) -> bool:
+    """Return false when a referenced Docling image has gone missing."""
+
+    try:
+        text = source_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    source_root = source_path.parent.resolve()
+    for match in MARKDOWN_IMAGE_TARGET_RE.finditer(text):
+        target = match.group("target").strip().strip("<>")
+        if target.startswith(("data:", "http://", "https://", "//")):
+            continue
+        if target.startswith("/") or ".staging/" in target:
+            return False
+        candidate = (source_root / unquote(target.split("#", 1)[0])).resolve()
+        try:
+            candidate.relative_to(source_root)
+        except ValueError:
+            return False
+        if not candidate.is_file():
+            return False
+    return True
+
+
+def load_manifest(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def manifest_stage(manifest: dict[str, Any], stage: str) -> dict[str, Any]:
+    stages = manifest.get("stages")
+    if not isinstance(stages, dict):
+        return {}
+    record = stages.get(stage)
+    return record if isinstance(record, dict) else {}
+
+
+def stage_is_cached(
+    manifest: dict[str, Any], stage: str, key: str, paths: list[Path]
+) -> bool:
+    record = manifest_stage(manifest, stage)
+    return (
+        isinstance(record, dict)
+        and record.get("status") == "complete"
+        and record.get("cache_key") == key
+        and all(nonempty_file(path) for path in paths)
+    )
+
+
+def stage_record(
+    manifest: dict[str, Any],
+    stage: str,
+    cache_key: str,
+    duration: float,
+    paths: list[Path],
+    **extra: Any,
+) -> None:
+    stages = manifest.setdefault("stages", {})
+    if not isinstance(stages, dict):
+        stages = {}
+        manifest["stages"] = stages
+    stages[stage] = {
+        "status": "complete",
+        "cache_key": cache_key,
+        "duration_seconds": round(duration, 3),
+        "outputs": [str(path.name) for path in paths],
+        "completed_at": now_utc(),
+        **extra,
+    }
+
+
+def stage_pending(manifest: dict[str, Any], stage: str, cache_key: str) -> None:
+    stages = manifest.setdefault("stages", {})
+    if not isinstance(stages, dict):
+        stages = {}
+        manifest["stages"] = stages
+    stages[stage] = {
+        "status": "running",
+        "cache_key": cache_key,
+        "started_at": now_utc(),
+    }
+
+
+def invalidate_stage_outputs(job_dir: Path, stage: str) -> None:
+    if stage == "nougat":
+        (job_dir / "nougat.mmd").unlink(missing_ok=True)
+        staging_dir = job_dir / ".staging" / "nougat"
+    elif stage == "docling":
+        (job_dir / "docling.md").unlink(missing_ok=True)
+        assets_dir = job_dir / "docling_assets"
+        if assets_dir.exists():
+            shutil.rmtree(assets_dir)
+        staging_dir = job_dir / ".staging" / "docling"
+    else:
+        raise ValueError(f"Unknown stage: {stage}")
+    if staging_dir.exists():
+        cleanup_staging_dir(staging_dir)
+
+    for path in (
+        job_dir / "combined.md",
+        job_dir / "docling_decoded.md",
+        job_dir / "merge_report.json",
+        job_dir / "timings.json",
+        job_dir / "combined_for_tex.md",
+        job_dir / "combined.tex",
+    ):
+        path.unlink(missing_ok=True)
+    figures_dir = job_dir / "figures"
+    if figures_dir.exists():
+        shutil.rmtree(figures_dir)
+
+
+def find_docling_source(job_dir: Path, input_stem: str) -> Path:
+    canonical = job_dir / "docling.md"
+    if nonempty_file(canonical):
+        return canonical
+    # Compatibility with v2 jobs produced before raw Markdown was kept in the
+    # job root.  These are normalized during merge-only/resume repair.
+    return find_single_output(job_dir / "docling_assets", ".md", input_stem)
+
+
+def repair_cached_docling_markdown(job_dir: Path, input_stem: str) -> Path:
+    """Upgrade a cached v2 Docling result without invoking either OCR engine."""
+
+    source = find_docling_source(job_dir, input_stem)
+    canonical = job_dir / "docling.md"
+    normalize_docling_markdown(
+        source,
+        canonical,
+        job_dir / "docling_assets",
+        job_dir,
+        allow_cached_repair=True,
+    )
+    return canonical
+
+
+def markdown_reference_errors(text: str, base_dir: Path) -> list[str]:
+    errors: list[str] = []
+    if ".staging/" in text or "/.staging/" in text:
+        errors.append("contains a staging path")
+    for match in MARKDOWN_IMAGE_TARGET_RE.finditer(text):
+        target = unquote(match.group("target").strip().strip("<>").split("#", 1)[0])
+        if not target or target.startswith(("data:", "http://", "https://", "//")):
+            continue
+        path = Path(target)
+        if path.is_absolute():
+            errors.append(f"contains an absolute local image path: {target}")
+            continue
+        candidate = (base_dir / path).resolve()
+        try:
+            candidate.relative_to(base_dir.resolve())
+        except ValueError:
+            errors.append(f"contains an image path outside the job: {target}")
+            continue
+        if not candidate.is_file():
+            errors.append(f"contains an unresolved image path: {target}")
+    return errors
+
+
+def structured_spans_for_alignment(text: str, *, include_images: bool) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for regex in (FENCED_RE, TRIPLE_QUOTE_RE, VERBATIM_RE, TABULAR_RE, FORMULA_RE):
+        spans.extend(spans_from_regex(text, regex))
+    spans.extend((token.start, token.end) for token in extract_markdown_tables(text, []))
+    if include_images:
+        spans.extend(spans_from_regex(text, IMAGE_RE))
+    return spans
+
+
+def paragraph_boundary_before(text: str, offset: int) -> int:
+    boundary = text.rfind("\n\n", 0, offset)
+    if boundary >= 0:
+        return boundary + 2
+    line = text.rfind("\n", 0, offset)
+    return line + 1 if line >= 0 else 0
+
+
+def inline_figure_edits(nougat_text: str, docling_text: str, figures: list[FigureBlock]) -> tuple[list[tuple[int, int, str]], list[FigureBlock]]:
+    """Anchor figures using a single monotonic, structured-content-masked map."""
+
+    if not figures:
+        return [], []
+    nougat_spans = structured_spans_for_alignment(nougat_text, include_images=False)
+    docling_spans = structured_spans_for_alignment(docling_text, include_images=True)
+    nougat_words, docling_words, blocks = build_word_map(
+        nougat_text,
+        docling_text,
+        nougat_spans,
+        docling_spans,
+    )
+    if not nougat_words or not docling_words or not blocks:
+        return [], figures
+
+    docling_starts = [start for start, _ in docling_words]
+    masked_nougat = mask_spans(nougat_text, nougat_spans)
+    aligned_nougat_words = [masked_nougat[start:end].lower() for start, end in nougat_words]
+
+    def unique_context_anchor(left: tuple[int, int, int], right: tuple[int, int, int]) -> int | None:
+        left_context = aligned_nougat_words[max(left[0], left[0] + left[2] - 4):left[0] + left[2]]
+        right_context = aligned_nougat_words[right[0]:right[0] + min(4, right[2])]
+        if len(left_context) < 3 or len(right_context) < 3:
+            return None
+        anchors: set[int] = set()
+        width = len(left_context)
+        for start in range(len(aligned_nougat_words) - width + 1):
+            if aligned_nougat_words[start:start + width] != left_context:
+                continue
+            gap_end = min(len(aligned_nougat_words) - len(right_context) + 1, start + width + 121)
+            for next_start in range(start + width, gap_end):
+                if aligned_nougat_words[next_start:next_start + len(right_context)] == right_context:
+                    anchors.add(paragraph_boundary_before(nougat_text, nougat_words[next_start][0]))
+        return next(iter(anchors)) if len(anchors) == 1 else None
+    edits: list[tuple[int, int, str]] = []
+    unplaced: list[FigureBlock] = []
+    last_anchor = -1
+    for figure in figures:
+        word_index = bisect_right(docling_starts, figure.source_offset) - 1
+        if word_index < 0:
+            unplaced.append(figure)
+            continue
+        left = next((block for block in reversed(blocks) if block[1] + block[2] <= word_index), None)
+        right = next((block for block in blocks if block[1] >= word_index), None)
+        # Both sides must carry enough unique surrounding prose and be close to
+        # the figure.  Anything weaker is intentionally appended, never guessed.
+        if (
+            left is None
+            or right is None
+            or left[2] < 3
+            or right[2] < 3
+            or word_index - (left[1] + left[2]) > 80
+            or right[1] - word_index > 80
+            or right[0] >= len(nougat_words)
+        ):
+            unplaced.append(figure)
+            continue
+        anchor = unique_context_anchor(left, right)
+        if anchor is None:
+            unplaced.append(figure)
+            continue
+        if anchor < last_anchor:
+            unplaced.append(figure)
+            continue
+        edits.append((anchor, anchor, figure.markdown + "\n\n"))
+        last_anchor = anchor
+    return edits, unplaced
+
+
+def merge_outputs_with_report(
+    nougat_text: str,
+    figures_text: str,
+    figure_placement: str,
+    normalize_math: bool,
+) -> tuple[str, dict[str, Any]]:
+    """Merge Docling annotations into Nougat without replacing its body."""
+
+    figures = extract_captioned_figures(figures_text)
+    combined_text, placed_footnotes, unplaced_footnotes = apply_footnotes(nougat_text, figures_text)
+    warnings: list[str] = []
+    if figure_placement == "inline":
+        edits, unplaced_figures = inline_figure_edits(combined_text, figures_text, figures)
+        combined_text = apply_edits(combined_text, edits)
+        placed_figures = len(figures) - len(unplaced_figures)
+        if unplaced_figures:
+            warnings.append(f"{len(unplaced_figures)} figure(s) had ambiguous inline anchors and were appended.")
+    else:
+        # Appended placement is the selected, successful placement policy; it
+        # is not a low-confidence inline fallback.
+        unplaced_figures = []
+        placed_figures = len(figures)
+
+    figures_to_append = unplaced_figures if figure_placement == "inline" else figures
+    if figures_to_append:
+        heading = "Figures" if figure_placement == "appended" else "Unplaced Figures"
+        combined_text = combined_text.rstrip() + f"\n\n## {heading}\n\n" + "\n\n".join(
+            figure.markdown for figure in figures_to_append
+        )
+    if placed_footnotes:
+        definitions = [
+            f"[^{number}]: {body}"
+            for number, body in sorted(placed_footnotes.items(), key=lambda item: int(item[0]))
+        ]
+        combined_text = combined_text.rstrip() + "\n\n" + "\n\n".join(definitions)
+    if unplaced_footnotes:
+        warnings.append(f"{len(unplaced_footnotes)} footnote(s) could not be anchored in Nougat text.")
+        definitions = [
+            f"[^{number}]: {body}"
+            for number, body in sorted(unplaced_footnotes.items(), key=lambda item: int(item[0]))
+        ]
+        combined_text = combined_text.rstrip() + "\n\n## Footnotes (Unplaced)\n\n" + "\n\n".join(definitions)
+    if normalize_math:
+        combined_text = normalize_bracket_math(combined_text)
+        combined_text = normalize_inline_math(combined_text)
+    report = {
+        "schema": MERGE_SCHEMA_VERSION,
+        "figure_placement": figure_placement,
+        "figures": {"total": len(figures), "placed": placed_figures, "unplaced": len(unplaced_figures)},
+        "footnotes": {"placed": len(placed_footnotes), "unplaced": len(unplaced_footnotes)},
+        "warnings": warnings,
+    }
+    return combined_text, report
+
+
+def merge_outputs(
+    nougat_text: str,
+    figures_text: str,
+    figure_placement: str,
+    normalize_math: bool,
+) -> str:
+    return merge_outputs_with_report(nougat_text, figures_text, figure_placement, normalize_math)[0]
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Extract Markdown from a single PDF using Nougat-OCR + Docling and merge outputs."
     )
     parser.add_argument("pdf", type=Path, help="Path to a single PDF")
+    parser.add_argument(
+        "--profile",
+        choices=sorted(PROFILE_DEFAULTS),
+        required=True,
+        help="Required extraction profile",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"), help="Root output directory")
     parser.add_argument("--nougat-cmd", help="Path to nougat executable")
     parser.add_argument("--docling-cmd", help="Path to docling executable")
     parser.add_argument(
-        "--nougat-args",
-        default="-m 0.1.0-base",
-        help="Extra args passed to nougat (e.g., \"-m 0.1.0-base\").",
+        "--nougat-arg",
+        action="append",
+        default=[],
+        help="One additional Nougat argument; repeat for multiple arguments.",
     )
     parser.add_argument(
-        "--docling-args",
-        default="",
-        help="Extra args passed to docling (e.g., \"--device cpu --page-batch-size 1\").",
+        "--docling-arg",
+        action="append",
+        default=[],
+        help="One additional Docling argument; repeat for multiple arguments.",
     )
+    parser.add_argument("--resume", action="store_true", help="Reuse valid cached OCR/Docling stages.")
+    parser.add_argument("--force", action="store_true", help="Recompute external stages even when cached.")
     parser.add_argument(
-        "--merge-only",
+        "--parallel-stages",
         action="store_true",
-        help="Reuse existing text.mmd and figures.md; skip Nougat/Docling execution.",
+        help="Run Nougat and Docling concurrently; use only when resources allow.",
     )
     parser.add_argument(
-        "--normalize-math",
-        action="store_true",
-        help="Normalize \\[...\\] to $$...$$ and \\(...\\) to $...$ in combined.md.",
+        "--figure-placement",
+        choices=("appended", "inline"),
+        default="appended",
+        help="Place figures at the end or align them into the source document.",
     )
     parser.add_argument(
         "--inline-figures",
-        action="store_true",
-        help="Use Docling Markdown as the base so figures stay inline; insert Nougat formulas/tables by alignment.",
+        action="store_const",
+        const="inline",
+        dest="figure_placement",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
-        "--to-latex",
-        action="store_true",
-        help="Generate combined_for_tex.md and combined.tex via Pandoc.",
+        "--image-mode",
+        choices=("referenced", "embedded"),
+        default="referenced",
+        help="Docling image export mode; referenced avoids a base64 round trip.",
     )
+    parser.add_argument(
+        "--keep-base64",
+        action="store_true",
+        help="Keep embedded Docling images in docling.md instead of decoding them.",
+    )
+    parser.add_argument("--merge-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--normalize-math", action="store_true", help="Normalize bracketed math delimiters.")
+    parser.add_argument("--to-latex", action="store_true", help="Generate LaTeX via Pandoc.")
     parser.add_argument("--title", help="Title metadata for Pandoc/YAML front matter.")
     parser.add_argument("--author", help="Author metadata for Pandoc/YAML front matter.")
     parser.add_argument("--date", help="Date metadata for Pandoc/YAML front matter.")
     parser.add_argument("--pandoc-cmd", help="Path to pandoc executable")
-    parser.add_argument("--keep-base64", action="store_true", help="Keep Docling base64 images in Markdown")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    if args.keep_base64:
+        args.image_mode = "embedded"
+    if args.resume and args.force:
+        print("--resume and --force cannot be used together.", file=sys.stderr)
+        return 2
 
     pdf_path = args.pdf.expanduser().resolve()
-    if not args.merge_only and not pdf_path.exists():
+    if not pdf_path.is_file():
         print(f"PDF not found: {pdf_path}", file=sys.stderr)
         return 1
 
     out_root = args.output_dir.expanduser().resolve()
-    job_dir = out_root / pdf_path.stem
+    input_hash = sha256_file(pdf_path)
+    job_dir = out_root / f"{safe_stem(pdf_path)}-{input_hash[:12]}"
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    text_md = job_dir / "text.mmd"
-    figures_md = job_dir / "figures.md"
+    nougat_md = job_dir / "nougat.mmd"
+    docling_md = job_dir / "docling.md"
     combined_md = job_dir / "combined.md"
+    manifest_path = job_dir / "manifest.json"
+    timings_path = job_dir / "timings.json"
+    manifest = load_manifest(manifest_path)
 
-    if args.merge_only:
-        if not text_md.exists():
-            print(f"Missing required file for merge-only: {text_md}", file=sys.stderr)
-            return 1
-        if not figures_md.exists():
-            print(f"Missing required file for merge-only: {figures_md}", file=sys.stderr)
-            return 1
-    else:
+    nougat_args = apply_profile_args(args.profile, args.nougat_arg, "nougat_args")
+    docling_args = apply_profile_args(args.profile, args.docling_arg, "docling_args")
+
+    nougat_cmd = None
+    docling_cmd = None
+    tools: dict[str, dict[str, str]] = {}
+    if not args.merge_only:
         nougat_cmd = require_command("nougat", args.nougat_cmd)
         docling_cmd = require_command("docling", args.docling_cmd)
-        nougat_args = shlex.split(args.nougat_args) if args.nougat_args else []
-        docling_args = shlex.split(args.docling_args) if args.docling_args else []
+        tools = {
+            "nougat": {"command": nougat_cmd, "version": command_version(nougat_cmd, "nougat-ocr")},
+            "docling": {"command": docling_cmd, "version": command_version(docling_cmd, "docling")},
+        }
 
-        print("Running Nougat-OCR...", file=sys.stderr)
-        run_nougat(nougat_cmd, pdf_path, text_md, job_dir, nougat_args)
+    cache_common = {
+        "schema": V2_VERSION,
+        "input_sha256": input_hash,
+        "profile": args.profile,
+    }
+    nougat_config = {
+        **cache_common,
+        "nougat_args": nougat_args,
+        "tool": tools.get("nougat", {}),
+    }
+    docling_config = {
+        **cache_common,
+        "docling_args": docling_args,
+        "image_mode": args.image_mode,
+        "tool": tools.get("docling", {}),
+    }
+    cache_config = {"nougat": nougat_config, "docling": docling_config}
+    nougat_key = cache_digest(nougat_config)
+    docling_key = cache_digest(docling_config)
+    nougat_cached = bool(args.resume) and stage_is_cached(manifest, "nougat", nougat_key, [nougat_md])
+    docling_source_candidate: Path | None = None
+    if (args.resume or args.merge_only) and ((job_dir / "docling.md").exists() or (job_dir / "docling_assets").exists()):
+        try:
+            docling_source_candidate = repair_cached_docling_markdown(job_dir, pdf_path.stem)
+        except (RuntimeError, ValueError, OSError):
+            docling_source_candidate = None
+    docling_cached = bool(args.resume) and docling_source_candidate is not None and stage_is_cached(
+        manifest,
+        "docling",
+        docling_key,
+        [docling_md, docling_source_candidate],
+    ) and docling_assets_complete(docling_source_candidate)
+    stage_timings: dict[str, dict[str, Any]] = {}
+    actual_image_mode = args.image_mode
+    docling_source: Path | None = None
 
-        print("Running Docling...", file=sys.stderr)
-        run_docling(docling_cmd, pdf_path, figures_md, job_dir, docling_args)
-
-    if args.keep_base64:
-        base_path = figures_md
+    if args.merge_only:
+        if not nonempty_file(nougat_md) or not nonempty_file(docling_md):
+            print(f"Missing v2 stage outputs in {job_dir}; run extraction first.", file=sys.stderr)
+            return 1
+        if not (job_dir / "docling_assets").exists() and args.image_mode == "referenced":
+            print(f"Missing Docling asset directory in {job_dir}.", file=sys.stderr)
+            return 1
+        nougat_cached = docling_cached = True
     else:
-        figures_dir = job_dir / "figures"
-        figures_decoded = job_dir / "figures_decoded.md"
-        decode_docling_markdown(figures_md, figures_decoded, figures_dir)
-        base_path = figures_decoded
+        assert nougat_cmd is not None and docling_cmd is not None
+        manifest = {
+            **manifest,
+            "schema": V2_VERSION,
+            "merge_schema": MERGE_SCHEMA_VERSION,
+            "input": {"path": str(pdf_path), "sha256": input_hash},
+            "profile": args.profile,
+            "config": cache_config,
+            "tools": tools,
+            "runtime": {
+                "python": sys.executable,
+                "python_version": platform.python_version(),
+                "platform": platform.platform(),
+                "machine": platform.machine(),
+            },
+            "updated_at": now_utc(),
+        }
+        if args.force:
+            nougat_cached = docling_cached = False
 
-    nougat_text = text_md.read_text(encoding="utf-8")
-    figures_text = base_path.read_text(encoding="utf-8")
-    if args.inline_figures:
-        combined_text = figures_text.rstrip()
-        tokens = extract_tokens(nougat_text)
-        formula_tokens = [token for token in tokens if token.type == "formula"]
-        combined_text, inserted = replace_placeholders_with_formulas(combined_text, formula_tokens)
-        if inserted:
-            remaining_tokens: list[Token] = []
-            consumed = 0
-            for token in tokens:
-                if token.type == "formula" and consumed < inserted:
-                    consumed += 1
-                    continue
-                remaining_tokens.append(token)
+        for stage, cached, cache_key in (
+            ("nougat", nougat_cached, nougat_key),
+            ("docling", docling_cached, docling_key),
+        ):
+            if not cached:
+                invalidate_stage_outputs(job_dir, stage)
+                stage_pending(manifest, stage, cache_key)
+        write_json(manifest_path, manifest)
+
+        def run_stage(name: str, callback: Any) -> Any:
+            started = time.perf_counter()
+            result = callback()
+            stage_timings[name] = {"seconds": round(time.perf_counter() - started, 3), "cached": False}
+            return result
+
+        if args.parallel_stages and not nougat_cached and not docling_cached:
+            print("Running Nougat-OCR and Docling concurrently...", file=sys.stderr)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                nougat_future = executor.submit(
+                    run_stage,
+                    "nougat",
+                    lambda: run_nougat(nougat_cmd, pdf_path, nougat_md, job_dir, nougat_args),
+                )
+                docling_future = executor.submit(
+                    run_stage,
+                    "docling",
+                    lambda: run_docling(
+                        docling_cmd,
+                        pdf_path,
+                        docling_md,
+                        job_dir,
+                        docling_args,
+                        args.image_mode,
+                    ),
+                )
+                nougat_future.result()
+                docling_source, actual_image_mode = docling_future.result()
         else:
-            remaining_tokens = tokens
-        combined_text = insert_tokens_by_alignment(combined_text, remaining_tokens, nougat_text)
-        combined_text = insert_tokens_by_context(combined_text, remaining_tokens, nougat_text)
-    else:
-        figure_blocks = extract_figure_blocks(figures_text)
-        footnote_defs = extract_footnote_defs(figures_text)
-        footnote_markers = extract_footnote_markers(figures_text, footnote_defs)
+            if nougat_cached:
+                print("Reusing cached Nougat output.", file=sys.stderr)
+                stage_timings["nougat"] = {"seconds": 0.0, "cached": True}
+            else:
+                print("Running Nougat-OCR...", file=sys.stderr)
+                run_stage(
+                    "nougat",
+                    lambda: run_nougat(nougat_cmd, pdf_path, nougat_md, job_dir, nougat_args),
+                )
+            if docling_cached:
+                print("Reusing cached Docling output.", file=sys.stderr)
+                docling_source = docling_source_candidate
+                actual_image_mode = manifest_stage(manifest, "docling").get(
+                    "image_mode", args.image_mode
+                )
+                stage_timings["docling"] = {"seconds": 0.0, "cached": True}
+            else:
+                print("Running Docling...", file=sys.stderr)
+                docling_source, actual_image_mode = run_stage(
+                    "docling",
+                    lambda: run_docling(
+                        docling_cmd,
+                        pdf_path,
+                        docling_md,
+                        job_dir,
+                        docling_args,
+                        args.image_mode,
+                    ),
+                )
 
-        combined_text = nougat_text.rstrip()
-        used_footnotes: dict[str, str] = {}
-        if footnote_markers:
-            insertions: list[tuple[int, int, str, str]] = []
-            for num, ctx in footnote_markers.items():
-                if f"[^{num}]" in combined_text:
-                    used_footnotes[num] = footnote_defs.get(num, "")
-                    continue
-                loc = find_replacement(combined_text, ctx, num)
-                if loc is None:
-                    continue
-                start, end = loc
-                marker = f"[^{num}]"
-                if end < len(combined_text) and combined_text[end:end + 1].isalnum():
-                    marker += " "
-                insertions.append((start, end, marker, num))
+        if nougat_cached:
+            stage_timings.setdefault("nougat", {"seconds": 0.0, "cached": True})
+        else:
+            stage_record(
+                manifest,
+                "nougat",
+                nougat_key,
+                stage_timings["nougat"]["seconds"],
+                [nougat_md],
+            )
+        if docling_cached:
+            stage_timings.setdefault("docling", {"seconds": 0.0, "cached": True})
+        else:
+            assert docling_source is not None
+            stage_record(
+                manifest,
+                "docling",
+                docling_key,
+                stage_timings["docling"]["seconds"],
+                [docling_md, docling_source],
+                image_mode=actual_image_mode,
+            )
+        manifest["updated_at"] = now_utc()
+        write_json(manifest_path, manifest)
+    if args.merge_only:
+        actual_image_mode = manifest_stage(manifest, "docling").get(
+            "image_mode", args.image_mode
+        )
 
-            for start, end, marker, num in sorted(insertions, key=lambda x: x[0], reverse=True):
-                combined_text = combined_text[:start] + marker + combined_text[end:]
-                used_footnotes[num] = footnote_defs.get(num, "")
-        if figure_blocks:
-            combined_text = combined_text.rstrip() + "\n\n## Figures\n\n" + "\n\n".join(figure_blocks)
-        if used_footnotes:
-            ordered = sorted(used_footnotes.items(), key=lambda x: int(x[0]))
-            defs = [f"[^{num}]: {body}".strip() for num, body in ordered if body]
-            if defs:
-                combined_text = combined_text.rstrip() + "\n\n" + "\n\n".join(defs)
-        if footnote_defs:
-            unplaced = [
-                footnote_defs[num]
-                for num in sorted(footnote_defs, key=lambda x: int(x))
-                if num not in used_footnotes
-            ]
-            if unplaced:
-                combined_text = combined_text.rstrip() + "\n\n## Footnotes (Unplaced)\n\n" + "\n\n".join(unplaced)
-    if args.normalize_math:
-        combined_text = normalize_bracket_math(combined_text)
-        combined_text = normalize_inline_math(combined_text)
+    decode_duration = 0.0
+    figures_dir = job_dir / "figures"
+    figures_decoded = job_dir / "docling_decoded.md"
+    source_path = docling_source or find_docling_source(job_dir, pdf_path.stem)
+    decode_started = time.perf_counter()
+    reset_directory(figures_dir)
+    decode_docling_markdown(source_path, figures_decoded, figures_dir)
+    base_path = figures_decoded
+    decode_duration = time.perf_counter() - decode_started
+
+    merge_started = time.perf_counter()
+    nougat_text = nougat_md.read_text(encoding="utf-8")
+    figures_text = base_path.read_text(encoding="utf-8")
+    combined_text, merge_report = merge_outputs_with_report(
+        nougat_text,
+        figures_text,
+        args.figure_placement,
+        args.normalize_math,
+    )
 
     metadata_block = build_yaml_metadata(args.title, args.author, args.date)
     if metadata_block:
         combined_text = metadata_block + combined_text.lstrip()
-
     combined_text = combined_text.rstrip() + "\n"
-    combined_md.write_text(combined_text, encoding="utf-8")
+    atomic_write_text(combined_md, combined_text)
+    artifact_paths = [docling_md, combined_md]
+    decoded_path = job_dir / "docling_decoded.md"
+    if decoded_path.exists():
+        artifact_paths.append(decoded_path)
+    validation_errors: dict[str, list[str]] = {
+        path.name: markdown_reference_errors(path.read_text(encoding="utf-8"), job_dir)
+        for path in artifact_paths
+    }
+    merge_report["validation"] = {
+        "ok": not any(validation_errors.values()),
+        "artifacts": validation_errors,
+    }
+    write_json(job_dir / "merge_report.json", merge_report)
+    if not merge_report["validation"]["ok"]:
+        details = "; ".join(
+            f"{name}: {', '.join(errors)}" for name, errors in validation_errors.items() if errors
+        )
+        raise RuntimeError(f"Merged Markdown failed durable-asset validation: {details}")
+    manifest["merge_schema"] = MERGE_SCHEMA_VERSION
+    manifest["updated_at"] = now_utc()
+    write_json(manifest_path, manifest)
+    merge_duration = time.perf_counter() - merge_started
+
+    timings = load_manifest(timings_path)
+    if not isinstance(timings, dict):
+        timings = {}
+    timings.update(
+        {
+            "updated_at": now_utc(),
+            "stages": stage_timings or timings.get("stages", {}),
+            "merge_seconds": round(merge_duration, 3),
+            "figure_decode_seconds": round(decode_duration, 3),
+            "figure_placement": args.figure_placement,
+            "image_mode": actual_image_mode,
+        }
+    )
+    write_json(timings_path, timings)
+
     if args.to_latex:
         combined_for_tex = job_dir / "combined_for_tex.md"
         combined_tex = job_dir / "combined.tex"
         cleaned = fix_fences(combined_text)
-        combined_for_tex.write_text(cleaned, encoding="utf-8")
+        latex_input_errors = validate_latex_input(cleaned, job_dir)
+        if latex_input_errors:
+            raise RuntimeError("Cannot generate pdfLaTeX input: " + "; ".join(latex_input_errors))
+        atomic_write_text(combined_for_tex, cleaned)
         pandoc_cmd = require_command("pandoc", args.pandoc_cmd)
         subprocess.run(
             [
                 pandoc_cmd,
-                str(combined_for_tex),
+                combined_for_tex.name,
                 "-s",
                 "--from",
                 "markdown+tex_math_dollars+tex_math_single_backslash",
+                f"--resource-path=.{os.pathsep}figures{os.pathsep}docling_assets",
                 "-o",
-                str(combined_tex),
+                combined_tex.name,
             ],
             check=True,
+            cwd=job_dir,
         )
         latex_text = combined_tex.read_text(encoding="utf-8", errors="replace")
         combined_tex.write_text(postprocess_latex(latex_text), encoding="utf-8")

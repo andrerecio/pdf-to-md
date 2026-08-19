@@ -1,0 +1,12 @@
+# Tested on CPython 3.12.
+# PyTorch accelerator wheels may need a platform-specific index; replace the
+# torch/torchvision lines only when selecting CUDA or another accelerator build.
+nougat-ocr==0.1.17
+torch==2.2.2
+torchvision==0.17.2
+transformers==4.38.2
+tokenizers==0.15.2
+albumentations==1.3.1
+pypdfium2==4.30.0
+numpy==1.26.4
+opencv-python-headless==4.8.1.78
