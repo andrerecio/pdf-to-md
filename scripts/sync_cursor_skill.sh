@@ -10,14 +10,15 @@ Usage:
   sync_cursor_skill.sh --project /path/to/project
 
 Options:
-  --src PATH      Source skill directory (default: ~/Documents/GitHub/skills/pdf-to-md)
+  --src PATH      Source skill directory (default: repository containing this script)
   --dest PATH     Destination skill directory (default: ~/.cursor/skills/pdf-to-md)
   --project PATH  Sync into a project-local .cursor/skills directory
   -h, --help      Show this help
 USAGE
 }
 
-SRC_DEFAULT="$HOME/Documents/GitHub/skills/pdf-to-md"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SRC_DEFAULT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 DEST_DEFAULT="$HOME/.cursor/skills/pdf-to-md"
 SRC="$SRC_DEFAULT"
 DEST="$DEST_DEFAULT"

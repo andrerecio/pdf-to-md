@@ -1,77 +1,101 @@
 ---
 name: pdf-to-md
-description: Extract structured Markdown from a single research PDF, preserving equations and tables via Nougat-OCR and figures via Docling; use when converting PDFs to Markdown with math, tables, and figure assets or when combining Nougat text with Docling figures.
+description: Extract structured Markdown from one research PDF using Nougat-OCR for text, math, and tables and Docling for figures, footnotes, and layout.
 ---
 
 # Pdf To Md
 
-## Overview
-Use Nougat-OCR (base model by default) for text, math, tables, and verbatim blocks and Docling for figures + footnotes. By default, figures are appended to the Nougat Markdown and Docling footnotes are inserted inline; use `--inline-figures` to keep figures in their original positions and blend in Nougat math/tables (Docling footnotes are left as-is). Math normalization is optional.
+## Purpose
 
-## Workflow
-1. Check dependencies: run `~/.venvs/jupyter/bin/python scripts/check_deps.py` (use `--nougat-cmd`/`--docling-cmd` if needed).
-2. Extract and merge: run `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py <path/to.pdf>` (use `--nougat-cmd`/`--docling-cmd` if needed; on macOS start with `--docling-args "--device cpu --page-batch-size 1"` and only add `--pipeline legacy` if the standard pipeline fails). Add `--inline-figures` to keep figures inline. Plan for Nougat to run up to 60+ minutes; set any orchestration timeouts to at least 60 minutes. If running via an agent and no timeout was specified, ask the user which timeout to use (recommend 60+ minutes).
-   - If you run it directly in your terminal, you don’t need to do anything — it will run until completion.
-   - If you run it via an agent/automation runner, that runner may have its own timeout. In that case:
-     - In this Codex CLI chat: if you ask me to run it, I’ll set the tool timeout to ≥ 60 minutes (e.g., 3,600,000 ms).
-     - In Cursor / task runners / scripts: set the command timeout to 60+ minutes (or disable timeouts).
-     - Avoid wrapping with a short `timeout` command; or set it to at least 3600 seconds.
-3. Review outputs in `outputs/<pdf-stem>/`.
-4. Optional LaTeX conversion:
-   - One-shot: add `--to-latex` (optionally `--pandoc-cmd`) to the extract command (moves figures/tables inline and injects `\caption{}` in the LaTeX).
-   - Manual: `~/.venvs/jupyter/bin/python scripts/prepare_md_for_latex.py outputs/<stem>/combined.md`
-   - Manual: `pandoc outputs/<stem>/combined_for_tex.md -s --from markdown+tex_math_dollars+tex_math_single_backslash -o outputs/<stem>/combined.tex`
+Use this skill when a PDF must be converted to Markdown while preserving
+equations, tables, figure assets, and footnotes. The pipeline runs Nougat and
+Docling in isolated environments, then merges their outputs. Nougat is the
+canonical source for the final document body: prose, headings, equations, and
+tables come from Nougat for both figure-placement modes. Docling supplies
+figures, captions, and footnote/layout evidence to the merge step.
 
-## Command example
-```bash
-~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py notes_rbc_quant_sp2024.pdf --output-dir outputs
-~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py notes_rbc_quant_sp2024.pdf --output-dir outputs --inline-figures
-```
+## Quick workflow
 
-## Output layout
-- `outputs/<stem>/text.mmd` (Nougat)
-- `outputs/<stem>/figures.md` (Docling raw)
-- `outputs/<stem>/figures/` (decoded image files)
-- `outputs/<stem>/figures_decoded.md`
-- `outputs/<stem>/combined.md` (Nougat base text + Docling figures appended; footnotes inserted inline unless `--inline-figures` is used, which keeps Docling footnotes as-is)
+1. Provision the runtime once by following INSTALL.md.
+2. Run the diagnostic command and pass explicit tool paths when the tools are
+   not on PATH.
+3. Choose a required profile:
+   - fast uses Nougat small with conservative batch settings.
+   - quality uses Nougat base for higher-quality academic extraction.
+4. Run extraction with --resume for stage-level caching.
+5. Review combined.md, figures/, and merge_report.json in the generated hashed
+   job directory.
 
-## Options
-- `--keep-base64` keep Docling base64 images in Markdown (skip decoding).
-- `--merge-only` skip Nougat/Docling runs and reuse existing `text.mmd` + `figures.md`.
-- `--normalize-math` normalize `\(...\)` to `$...$` and `\[...\]` to `$$...$$`.
-- `--inline-figures` use Docling Markdown as the base so figures stay inline; Nougat math/tables are inserted by alignment.
-- `--to-latex` generate `combined_for_tex.md` and `combined.tex` via Pandoc.
-- `--title` set Pandoc/YAML title metadata.
-- `--author` set Pandoc/YAML author metadata.
-- `--date` set Pandoc/YAML date metadata.
-- `--pandoc-cmd` explicit path to the Pandoc executable (used with `--to-latex`).
-- `--nougat-cmd` explicit path to the Nougat executable.
-- `--nougat-args` extra arguments passed to the Nougat CLI (defaults to `"-m 0.1.0-base"`).
-- `--docling-cmd` explicit path to the Docling executable.
-- `--docling-args` extra arguments passed to the Docling CLI (use for `--device`, `--page-batch-size`, `--pipeline`, etc.).
+Example:
 
-## Troubleshooting
-- Docling RT-DETR padding errors (batched image sizes): re-run with `--docling-args "--device cpu --page-batch-size 1"`.
-- If Docling still fails, add `--pipeline legacy`, but note this can reduce figure extraction.
-- Docling NumPy 2.x/Torch mismatch: in the Docling venv run `pip install "numpy<2" "opencv-python==4.8.1.78"`.
-- Nougat OpenMP SHM crash on macOS (e.g., `OMP: Error #179 ... SHM2` followed by SIGABRT): run with `KMP_SHM_DISABLE=1 OMP_NUM_THREADS=1` in the environment.
+    python3 scripts/check_deps.py \
+      --nougat-cmd /path/to/runtime/nougat/bin/nougat \
+      --docling-cmd /path/to/runtime/docling/bin/docling
 
-## Portability (install once per machine)
-Option A: Copy
+    python3 scripts/extract_pdf_to_md.py /path/to/paper.pdf \
+      --profile fast \
+      --output-dir outputs \
+      --nougat-cmd /path/to/runtime/nougat/bin/nougat \
+      --docling-cmd /path/to/runtime/docling/bin/docling \
+      --resume
 
-1. `git clone <your-repo-url> ~/dev/pdf-to-md-skill`
-2. `mkdir -p $CODEX_HOME/skills`
-3. `cp -R ~/dev/pdf-to-md-skill $CODEX_HOME/skills/pdf-to-md`
+Use --profile quality for the base model. Appended figures are the default.
+Use --figure-placement inline only when figures should be placed near their
+source. Inline placement uses monotonic text anchors and appends an ambiguous
+or low-confidence figure under **Unplaced Figures** with a warning in
+merge_report.json. Use --force to recompute cached stages, and
+--parallel-stages only when the host has enough resources to run both models.
+For a shareable, placeholder-based example covering dependency checks,
+conversion, report review, and PDF compilation, see the
+[complete POSIX workflow template](INSTALL.md#complete-posix-workflow-template).
 
-Option B: Symlink (keeps updates in sync)
+## Outputs
 
-1. `git clone <your-repo-url> ~/dev/pdf-to-md-skill`
-2. `mkdir -p $CODEX_HOME/skills`
-3. `ln -s ~/dev/pdf-to-md-skill $CODEX_HOME/skills/pdf-to-md`
+Each PDF gets a directory named <safe-stem>-<content-hash> containing:
+
+    nougat.mmd
+    docling.md
+    docling_assets/
+    docling_decoded.md
+    figures/
+    combined.md
+    merge_report.json
+    manifest.json
+    timings.json
+
+Optional LaTeX output is created with --to-latex when Pandoc is installed.
+
+## Important behavior
+
+- Nougat and Docling are invoked once per uncached stage using their output
+  directory interfaces. Changing placement, math normalization, metadata, or
+  LaTeX generation does not rerun OCR.
+- The manifest records the PDF hash, profile, arguments, tool versions, runtime,
+  and completed stages.
+- Docling referenced image export is the default. The runner retries with
+  embedded images when the installed Docling version cannot export references.
+- Every local figure is copied into the job. Normalized Docling Markdown uses
+  durable relative links under `docling_assets/`; decoded and final Markdown
+  uses canonical links such as `figures/figure-001.png`. No final Markdown may
+  contain absolute paths or `.staging/` paths. `docling_assets/` retains the
+  normalized Docling assets for cache reuse.
+- `--resume` repairs and re-normalizes valid cached Docling output before
+  merging. `--merge-only` performs the same merge/asset repair from an existing
+  hashed job without invoking Nougat or Docling, so a long OCR run need not be
+  repeated.
+- `merge_report.json` (merge schema 3) records figure placement, fallback
+  warnings, footnote reconstruction, and asset/Markdown validation. Review it
+  alongside combined.md when accepting a conversion.
+- Before LaTeX output is written, the runner checks for unresolved local assets,
+  staging paths, formula placeholders, and unsupported raw Unicode for the
+  documented pdfLaTeX route. Pandoc is run with the job directory and its
+  `figures/` and `docling_assets/` directories as resource paths.
+- --nougat-arg and --docling-arg are repeatable and avoid shell-specific
+  argument quoting.
 
 ## References
-- See `references/workflow.md` for detailed pipeline steps and failure modes.
-- See `references/tooling.md` for installation and CLI notes.
-- See `references/io-spec.md` for I/O contract details.
-- See `EXPORT_AND_SETUP.md` for cross-machine install, portability, and venv setup.
-- See `EXPORT_AND_SETUP.md` for Cursor skills installation and sync helper.
+
+- INSTALL.md: cross-platform installation, runtime provisioning, and updates.
+- references/workflow.md: end-to-end usage and recovery.
+- references/io-spec.md: output contract and cache semantics.
+- references/tooling.md: tested constraints and hardware notes.

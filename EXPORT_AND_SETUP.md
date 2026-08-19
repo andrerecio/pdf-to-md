@@ -1,195 +1,36 @@
-# Pdf-to-md Skill Export and Setup
+# Export and setup
 
-## 1) Export the skill on the source machine
+The authoritative installation and portability guide is
+INSTALL.md. It covers Codex copies, Cursor copies, macOS/Linux/Windows setup,
+isolated Nougat and Docling environments, verification, updates, and removal.
 
-1. Locate the skill folder:
-   - `~/.codex/skills/pdf-to-md`
+This file remains as a stable link for older references.
 
-2. Package the skill into a `.skill` file:
-   - `~/.venvs/jupyter/bin/python ~/.codex/skills/.system/skill-creator/scripts/package_skill.py ~/.codex/skills/pdf-to-md ./dist`
+The exported skill keeps the v2 output contract: Nougat is the canonical
+prose/equation/table body for appended (default) and explicit inline figure
+placement. Local images are copied into the hashed job and referenced with
+durable relative paths such as `figures/figure-001.png`; `.staging/` and
+absolute local paths must not appear in final Markdown. Inline placement falls
+back to a single **Unplaced Figures** section, with the reason recorded in
+`merge_report.json`. Review that report for placement, footnote, asset, and
+validation status.
 
-3. Copy the generated file to the new machine:
-   - `./dist/pdf-to-md.skill`
+Existing OCR caches can be repaired without rerunning either model: invoke the
+runner with the same PDF, profile, and output directory plus `--resume`, or
+use `--merge-only` when the external stages are already complete. The latter
+rebuilds the merge and normalizes cached Docling assets without requiring
+Nougat or Docling executables.
 
-## 2) Install the skill on the new machine
+## Packaging an archive
 
-1. Create a skills directory if it does not exist:
-   - `mkdir -p $CODEX_HOME/skills`
+If the host application provides a skill packager, run that packager against
+the repository directory rather than assuming a particular Codex installation
+path. The resulting archive can be extracted into the host's skills directory.
+After extraction, verify that the destination directly contains SKILL.md,
+references/, and scripts/.
 
-2. Unpack the `.skill` file into the skills directory:
-   - `unzip pdf-to-md.skill -d $CODEX_HOME/skills/pdf-to-md`
+## Runtime provisioning
 
-3. Verify the skill folder:
-   - `$CODEX_HOME/skills/pdf-to-md/SKILL.md`
-
-## 2b) Install globally from a GitHub repo (recommended)
-
-This keeps the skill versioned and available on the whole machine.
-
-Option A: Copy (simple)
-
-1. Clone your repo anywhere:
-   - `git clone <your-repo-url> ~/dev/pdf-to-md-skill`
-
-2. Copy the skill folder into Codex:
-   - `mkdir -p $CODEX_HOME/skills`
-   - `cp -R ~/dev/pdf-to-md-skill $CODEX_HOME/skills/pdf-to-md`
-
-Option B: Symlink (best for staying in sync)
-
-1. Clone your repo once:
-   - `git clone <your-repo-url> ~/dev/pdf-to-md-skill`
-
-2. Symlink into Codex:
-   - `mkdir -p $CODEX_HOME/skills`
-   - `ln -s ~/dev/pdf-to-md-skill $CODEX_HOME/skills/pdf-to-md`
-
-3. Verify:
-   - `$CODEX_HOME/skills/pdf-to-md/SKILL.md`
-
-## 2c) Install into Cursor (skills)
-
-Cursor 2.4+ can load skills from `~/.cursor/skills` (global) or `<project>/.cursor/skills` (project-local).
-Symlinks are not always reliable, so use a real copy.
-
-Global install (recommended):
-- `mkdir -p ~/.cursor/skills`
-- `rsync -a --delete ~/Documents/GitHub/skills/pdf-to-md/ ~/.cursor/skills/pdf-to-md/`
-
-Project-local install:
-- `mkdir -p /path/to/project/.cursor/skills`
-- `rsync -a --delete ~/Documents/GitHub/skills/pdf-to-md/ /path/to/project/.cursor/skills/pdf-to-md/`
-
-One-command helper (from this repo):
-- `scripts/sync_cursor_skill.sh`
-  - Global: `scripts/sync_cursor_skill.sh`
-  - Project-local: `scripts/sync_cursor_skill.sh --project /path/to/project`
-
-## 3) Create dedicated venvs (recommended)
-
-Use the same interpreter that was used here:
-- `~/.venvs/jupyter/bin/python`
-
-Create two isolated venvs for dependency stability:
-
-- `~/.venvs/jupyter/bin/python -m venv /path/to/venvs/nougat`
-- `~/.venvs/jupyter/bin/python -m venv /path/to/venvs/docling`
-
-Upgrade pip in both:
-
-- `/path/to/venvs/nougat/bin/python -m pip install --upgrade pip`
-- `/path/to/venvs/docling/bin/python -m pip install --upgrade pip`
-
-## 4) Install Nougat in its venv (pinned versions)
-
-Install the same versions used in this setup:
-
-- `/path/to/venvs/nougat/bin/python -m pip install \
-  "nougat-ocr==0.1.17" \
-  "transformers==4.38.2" \
-  "tokenizers==0.15.2" \
-  "albumentations==1.3.1" \
-  "pypdfium2==4.30.0" \
-  "numpy==1.26.4" \
-  "opencv-python-headless==4.8.1.78"`
-
-## 5) Install Docling in its venv
-
-- `/path/to/venvs/docling/bin/python -m pip install docling`
-- If Torch/Docling complains about NumPy 2.x (common on macOS), pin compatible versions:
-  - `/path/to/venvs/docling/bin/python -m pip install "numpy<2" "opencv-python==4.8.1.78"`
-
-## 6) Run the skill pipeline
-
-1. Check dependencies (explicit CLI paths):
-   - `~/.venvs/jupyter/bin/python $CODEX_HOME/skills/pdf-to-md/scripts/check_deps.py \
-     --nougat-cmd /path/to/venvs/nougat/bin/nougat \
-     --docling-cmd /path/to/venvs/docling/bin/docling`
-
-2. Run extraction:
-   - `~/.venvs/jupyter/bin/python $CODEX_HOME/skills/pdf-to-md/scripts/extract_pdf_to_md.py /path/to/file.pdf \
-     --output-dir outputs \
-     --nougat-cmd /path/to/venvs/nougat/bin/nougat \
-     --docling-cmd /path/to/venvs/docling/bin/docling`
-   - Optional (Docling RT-DETR padding errors / macOS): add `--docling-args "--device cpu --page-batch-size 1"`.
-   - If Docling still fails, add `--pipeline legacy`, but note this can reduce figure extraction.
-   - Optional: add `--normalize-math` to convert `\(...\)`/`\[...\]` to `$...$`/`$$...$$`.
-   - Optional: use `--merge-only` to reuse existing `text.mmd` and `figures.md` without re-running Nougat/Docling.
-
-3. Final output:
-   - `outputs/<pdf-stem>/combined.md`
-
-## 7) Convert Markdown to LaTeX (optional)
-
-1. Clean up code fences (helps Pandoc render verbatim blocks correctly):
-   - `~/.venvs/jupyter/bin/python $CODEX_HOME/skills/pdf-to-md/scripts/prepare_md_for_latex.py outputs/<stem>/combined.md`
-
-2. Convert to LaTeX with Pandoc:
-   - `pandoc outputs/<stem>/combined_for_tex.md -s --from markdown+tex_math_dollars+tex_math_single_backslash -o outputs/<stem>/combined.tex`
-
-Or use the one-shot flag (also inlines figures/tables and adds `\caption{}` in LaTeX):
-- `~/.venvs/jupyter/bin/python $CODEX_HOME/skills/pdf-to-md/scripts/extract_pdf_to_md.py /path/to/file.pdf \
-  --output-dir outputs \
-  --to-latex`
-
-## 8) Nougat model selection
-
-Nougat supports `--model` and `--checkpoint`. This skill defaults to the base model (`-m 0.1.0-base`). To use the small model instead, pass `--nougat-args "-m 0.1.0-small"`.
-
-### Option A: Run Nougat directly (ad-hoc)
-
-- `/path/to/venvs/nougat/bin/nougat /path/to/file.pdf -o /tmp/nougat_out -m 0.1.0-base --markdown`
-
-### Option B: Use the base model inside the skill pipeline (wrapper)
-
-Create a tiny wrapper script and point `--nougat-cmd` to it:
-
-```bash
-#!/usr/bin/env bash
-exec /path/to/venvs/nougat/bin/nougat -m 0.1.0-base "$@"
-```
-
-Then:
-- `chmod +x /path/to/nougat_base`
-- `~/.venvs/jupyter/bin/python $CODEX_HOME/skills/pdf-to-md/scripts/extract_pdf_to_md.py /path/to/file.pdf \
-  --output-dir outputs \
-  --nougat-cmd /path/to/nougat_base \
-  --docling-cmd /path/to/venvs/docling/bin/docling`
-
-### Option C: Pass `--nougat-args` (no wrapper script)
-
-- `~/.venvs/jupyter/bin/python $CODEX_HOME/skills/pdf-to-md/scripts/extract_pdf_to_md.py /path/to/file.pdf \
-  --output-dir outputs \
-  --nougat-cmd /path/to/venvs/nougat/bin/nougat \
-  --nougat-args "-m 0.1.0-base" \
-  --docling-cmd /path/to/venvs/docling/bin/docling`
-
-### Option D: Use the small model inside the skill pipeline
-
-- `~/.venvs/jupyter/bin/python $CODEX_HOME/skills/pdf-to-md/scripts/extract_pdf_to_md.py /path/to/file.pdf \
-  --output-dir outputs \
-  --nougat-cmd /path/to/venvs/nougat/bin/nougat \
-  --nougat-args "-m 0.1.0-small" \
-  --docling-cmd /path/to/venvs/docling/bin/docling`
-
-## Troubleshooting
-
-- If you see a lot of `[MISSING_PAGE]` in Nougat output, rerun with `--no-skipping` (add it to the wrapper script if using the skill pipeline).
-- If the Nougat CLI is not found, re-check `--nougat-cmd` and make sure the venv path is correct.
-- If Docling does not produce a Markdown file, confirm you passed `--docling-cmd` and that the output directory is writable.
-- If Docling fails with RT-DETR padding errors, re-run with `--docling-args "--device cpu --page-batch-size 1"`.
-- If Docling still fails, add `--pipeline legacy`, but note this can reduce figure extraction.
-- If Docling fails with NumPy 2.x / Torch errors, downgrade NumPy and OpenCV in the Docling venv: `pip install "numpy<2" "opencv-python==4.8.1.78"`.
-- If Nougat crashes on macOS with OpenMP shared-memory errors (e.g., `OMP: Error #179 ... SHM2` followed by SIGABRT), run with `KMP_SHM_DISABLE=1 OMP_NUM_THREADS=1`.
-
-## Notes
-
-- The skill uses Nougat for text/math/tables and appends Docling figure blocks under a `## Figures` section by default. Use `--inline-figures` to keep figures inline and then blend in Nougat math/tables.
-- Nougat runs can take a long time on large PDFs; plan for 60+ minutes and set any automation timeouts accordingly.
-- Direct terminal runs don’t need extra configuration; they run until completion.
-- Agent/automation runs may have their own timeouts:
-  - In Codex CLI chat: set tool timeout to ≥ 60 minutes (e.g., 3,600,000 ms).
-  - In Cursor / task runners / scripts: set command timeout to 60+ minutes (or disable timeouts).
-  - Avoid short `timeout` wrappers; use at least 3600 seconds.
-- Math normalization only happens when `--normalize-math` is used.
-- If you prefer base64 images in Markdown, pass `--keep-base64` to the extraction script.
+Use scripts/bootstrap_runtime.py with a user-selected runtime directory.
+Do not copy or reuse another machine's virtual environment; virtual
+environments contain absolute interpreter paths and platform-specific binaries.

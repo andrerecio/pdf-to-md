@@ -1,61 +1,49 @@
-# Tooling Notes
+# Tooling notes
 
-## Installation (from the Nougat/Docling workflow)
-- Nougat-OCR:
-  - `uv tool install nougat-ocr --python 3.12 --with transformers==4.38.2`
-- Docling:
-  - `uv tool install docling --python 3.12`
+## Tested constraints
 
-## Dedicated venvs (recommended)
-- Create separate venvs to avoid dependency conflicts:
-  - `~/.venvs/jupyter/bin/python -m venv /path/to/venvs/nougat`
-  - `~/.venvs/jupyter/bin/python -m venv /path/to/venvs/docling`
-- Install Nougat with pinned versions (Nougat venv):
-  - `venvs/nougat/bin/python -m pip install "nougat-ocr==0.1.17" "transformers==4.38.2" "tokenizers==0.15.2" "albumentations==1.3.1" "pypdfium2==4.30.0"`
-- Install Docling in its own venv:
-  - `venvs/docling/bin/python -m pip install docling`
-  - If Torch/Docling complains about NumPy 2.x (common on macOS), pin:
-    - `venvs/docling/bin/python -m pip install "numpy<2" "opencv-python==4.8.1.78"`
+The repository keeps separate pinned constraints:
 
-## CLI usage
-- Nougat (stdout):
-  - `nougat input.pdf > output.mmd`
-- Nougat (output directory):
-  - `nougat input.pdf --markdown --out /path/to/output_dir`
-- Nougat (base model):
-  - `nougat -m 0.1.0-base input.pdf --markdown --out /path/to/output_dir`
-- Nougat (small model):
-  - `nougat -m 0.1.0-small input.pdf --markdown --out /path/to/output_dir`
-- Docling:
-  - `docling --to md --image-export-mode embedded --output /path/to/output_dir input.pdf`
-  - Output will be written as `/path/to/output_dir/<stem>.md`
-  - If RT-DETR padding errors appear, retry with:
-    - `docling --device cpu --page-batch-size 1 --to md --image-export-mode embedded --output /path/to/output_dir input.pdf`
-  - If that still fails, add `--pipeline legacy`, but note this can reduce figure extraction.
+- requirements/nougat.txt
+- requirements/docling.txt
 
-## Performance
-- Both tools benefit from GPU acceleration, but CPU-only runs are supported.
-- If Nougat crashes on macOS with OpenMP shared-memory errors, run with `KMP_SHM_DISABLE=1 OMP_NUM_THREADS=1`.
+They are tested with CPython 3.12. Accelerator-specific PyTorch wheels may
+need to replace the CPU/MPS-compatible lines in those files.
 
-## Optional: Markdown to LaTeX
-- Pandoc:
-  - `pandoc combined_for_tex.md -s --from markdown+tex_math_dollars+tex_math_single_backslash -o combined.tex`
-- One-shot (uses Pandoc):
-  - `~/.venvs/jupyter/bin/python scripts/extract_pdf_to_md.py input.pdf --output-dir outputs --to-latex`
-  - Add `--title`, `--author`, and `--date` to inject YAML metadata for Pandoc.
+## External interfaces
 
-## Inline figures
-- To keep figures inline, pass `--inline-figures` to `scripts/extract_pdf_to_md.py`; this uses Docling Markdown as the base and inserts Nougat math/tables by alignment.
+Nougat is invoked with a PDF, model/profile arguments, --markdown, and an
+output directory. The runner validates exactly one .mmd artifact and uses it
+as the canonical prose, heading, equation, and table body.
 
-## Skill portability (install once per machine)
-Option A: Copy
+Docling is invoked with Markdown output, an image export mode, and an output
+directory. Referenced image mode is preferred; embedded mode remains a fallback.
+Before its staging directory is removed, every local image is resolved and
+copied into durable `docling_assets/`; final links are relative and use the
+canonical `figures/figure-NNN.ext` form. Missing or outside-root assets are
+reported as validation errors.
 
-1. `git clone <your-repo-url> ~/dev/pdf-to-md-skill`
-2. `mkdir -p $CODEX_HOME/skills`
-3. `cp -R ~/dev/pdf-to-md-skill $CODEX_HOME/skills/pdf-to-md`
+Pandoc is optional and required only for --to-latex. It is run from the hashed
+job directory with the job directory, `figures/`, and `docling_assets/` as
+resource paths. The LaTeX preparation preflight rejects unresolved local
+assets, absolute or `.staging/` paths, formula placeholders, and raw Unicode
+unsupported by the documented pdfLaTeX route. Compile a successful output with
+`latexmk -pdf -halt-on-error -file-line-error combined.tex` from that job
+directory.
 
-Option B: Symlink (keeps updates in sync)
+## Hardware
 
-1. `git clone <your-repo-url> ~/dev/pdf-to-md-skill`
-2. `mkdir -p $CODEX_HOME/skills`
-3. `ln -s ~/dev/pdf-to-md-skill $CODEX_HOME/skills/pdf-to-md`
+CPU is the portable baseline. The fast profile uses the small Nougat model and
+small page batches. The quality profile uses the base model. Docling device,
+thread, page-batch, and profiling settings can be passed with repeatable
+--docling-arg options, for example --docling-arg=--profiling and
+--docling-arg=--save-profiling.
+
+Model artifacts are downloaded lazily by the external tools. Use check_deps.py
+to print the runtime and cache locations before starting a long conversion.
+
+Review `merge_report.json` after every run. It is the authoritative summary of
+figure placement (including inline fallbacks), footnote reconstruction, asset
+resolution, and Markdown/LaTeX preflight validation. A merge can be rebuilt
+from valid cached stages with `--resume` or `--merge-only` without rerunning
+OCR.

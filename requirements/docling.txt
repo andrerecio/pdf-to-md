@@ -1,0 +1,8 @@
+# Tested on CPython 3.12 with Docling 2.71.0.
+# PyTorch accelerator wheels may need a platform-specific index; replace the
+# torch/torchvision lines only when selecting CUDA or another accelerator build.
+docling==2.71.0
+torch==2.2.2
+torchvision==0.17.2
+numpy==1.26.4
+opencv-python==4.8.1.78
