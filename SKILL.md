@@ -16,14 +16,22 @@ figures, captions, and footnote/layout evidence to the merge step.
 
 ## Quick workflow
 
-1. Provision the runtime once by following INSTALL.md.
-2. Run the diagnostic command and pass explicit tool paths when the tools are
+1. Before asking the user to install anything or proceeding with installation,
+   check whether Nougat and Docling are already available. Check commands on
+   `PATH` and inspect any dedicated or existing virtual environments, including
+   the runtime paths configured for this skill. Validate each discovered
+   installation by invoking its executable or environment with a version/help
+   or diagnostic command; reuse a working installation instead of provisioning
+   a duplicate.
+2. Provision the runtime once by following INSTALL.md only for tools that are
+   not already installed and usable.
+3. Run the diagnostic command and pass explicit tool paths when the tools are
    not on PATH.
-3. Choose a required profile:
+4. Choose a required profile:
    - fast uses Nougat small with conservative batch settings.
    - quality uses Nougat base for higher-quality academic extraction.
-4. Run extraction with --resume for stage-level caching.
-5. Review combined.md, figures/, and merge_report.json in the generated hashed
+5. Run extraction with --resume for stage-level caching.
+6. Review combined.md, figures/, and merge_report.json in the generated hashed
    job directory.
 
 Example:
@@ -70,6 +78,10 @@ Optional LaTeX output is created with --to-latex when Pandoc is installed.
 - Nougat and Docling are invoked once per uncached stage using their output
   directory interfaces. Changing placement, math normalization, metadata, or
   LaTeX generation does not rerun OCR.
+- Dependency discovery always precedes installation: check PATH and dedicated
+  virtual environments first, and reuse any validated Nougat or Docling
+  installation. Do not ask the user to install or create a new environment
+  until those checks show that a usable installation is unavailable.
 - The manifest records the PDF hash, profile, arguments, tool versions, runtime,
   and completed stages.
 - Docling referenced image export is the default. The runner retries with
