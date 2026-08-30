@@ -7,8 +7,12 @@
    are not activated.
 3. Choose --profile fast or --profile quality.
 4. Run scripts/extract_pdf_to_md.py with --resume.
-5. Review combined.md, figures/, merge_report.json, manifest.json, and
-   timings.json.
+5. Review combined.md, figures/, merge_report.json, manifest.json, timings.json,
+   and ocr_audit.md/ocr_audit.json.
+6. Resolve every active OCR finding against only the named PDF page or bounding
+   box. Repair nougat.mmd (or docling.md for an inserted caption/footnote) only
+   when the PDF disagrees. Otherwise record `source_matches` or `false_positive`
+   with `scripts/audit_ocr.py`.
 
 The default `--figure-placement appended` mode keeps Nougat's complete body
 and adds each normalized Docling figure once under `## Figures`. Nougat is
@@ -26,10 +30,11 @@ Changing figure placement, math normalization, metadata, or LaTeX options does
 not require OCR reruns; rerun the merge command with --resume.
 
 When a job already has valid external stages, use the same PDF, profile, and
-output directory with `--merge-only` to rebuild Markdown and repair cached
-assets without invoking either OCR tool. `--resume` performs this merge-time
-normalization as part of a normal run. Both paths rewrite local Docling image
-references to durable relative links and remove stale `.staging/` paths.
+output directory with `--merge-only` to rebuild Markdown, repair cached assets,
+and rerun the OCR audit without invoking either OCR tool. `--resume` performs
+this merge-time normalization and audit as part of a normal run. Both paths
+rewrite local Docling image references to durable relative links and remove
+stale `.staging/` paths.
 
 For example:
 
@@ -45,11 +50,14 @@ For example:
 - Keep stages serial unless the machine has enough memory for both models.
 - Use --parallel-stages only after measuring the host; GPU memory contention can
   make concurrent execution slower or fail.
-- Use timings.json to compare model, merge, and image-decoding costs.
+- Use timings.json to compare model, merge, image-decoding, and
+  `ocr_audit_seconds` costs.
 - Use merge_report.json to compare placed and unplaced figures, fallback
-  warnings, reconstructed footnotes, and validation failures. A clean report
-  contains no unresolved local assets, absolute paths, `.staging/` references,
-  or formula placeholders.
+  warnings, reconstructed footnotes, structural validation failures, and
+  OCR-audit status. Use ocr_audit.json to inspect per-page coverage and active
+  substitutions. A structurally clean report contains no unresolved local
+  assets, absolute paths, `.staging/` references, or formula placeholders; a
+  clear audit is limited to its reported coverage.
 
 ## Recovery
 
@@ -62,6 +70,14 @@ For example:
 - If inline matching is ambiguous, the affected figure is emitted once under
   `## Unplaced Figures` and the report explains the fallback; inspect that
   section before accepting the result.
+- If the OCR audit reports a finding, inspect only its page/bounding box and
+  resolve it after visual comparison. Batch confirmed source-artifact repairs,
+  then rerun with `--merge-only` and the original merge/LaTeX options. The
+  audit never edits content automatically. `partial` and `unavailable` pages
+  are coverage limitations, not proof of fidelity.
+- If the audit runtime cannot execute, the conversion remains nonfatal but
+  ocr_audit.json is `review_required` with an execution error; restore the
+  Nougat interpreter's pypdfium2 import before accepting the audit.
 - For LaTeX, use --to-latex. Pandoc runs from the hashed job directory with
   the job, `figures/`, and `docling_assets/` as resource paths. Preflight
   rejects unresolved assets, staging paths, formula placeholders, and raw

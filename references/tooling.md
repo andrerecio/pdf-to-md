@@ -42,8 +42,11 @@ thread, page-batch, and profiling settings can be passed with repeatable
 Model artifacts are downloaded lazily by the external tools. Use check_deps.py
 to print the runtime and cache locations before starting a long conversion.
 
-Review `merge_report.json` after every run. It is the authoritative summary of
-figure placement (including inline fallbacks), footnote reconstruction, asset
-resolution, and Markdown/LaTeX preflight validation. A merge can be rebuilt
-from valid cached stages with `--resume` or `--merge-only` without rerunning
-OCR.
+Review `merge_report.json` and `ocr_audit.md` after every run. The merge report
+is the authoritative summary of figure placement (including inline fallbacks),
+footnote reconstruction, asset resolution, and Markdown/LaTeX preflight
+validation. `ocr_audit.json` records bounded fidelity review prompts and
+coverage limitations; the audit never edits the canonical Nougat artifact.
+`timings.json` records `ocr_audit_seconds` separately. A merge and audit can be
+rebuilt from valid cached stages with `--resume` or `--merge-only` without
+rerunning OCR.

@@ -21,7 +21,7 @@ from difflib import SequenceMatcher
 from typing import Any
 from urllib.parse import unquote
 
-from check_deps import package_version_from_command
+from check_deps import launcher_interpreter, package_version_from_command
 from parse_docling_figures import decode_docling_markdown, normalize_docling_markdown
 from prepare_md_for_latex import fix_fences, validate_latex_input
 
@@ -29,7 +29,7 @@ from prepare_md_for_latex import fix_fences, validate_latex_input
 V2_VERSION = "2"
 # This changes merge/normalization behavior only.  It deliberately does not
 # participate in the expensive Nougat/Docling cache keys.
-MERGE_SCHEMA_VERSION = "3"
+MERGE_SCHEMA_VERSION = "4"
 PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
     "fast": {
         "nougat_args": ["-m", "0.1.0-small", "--batchsize", "1"],
@@ -1143,6 +1143,181 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def audit_interpreter_has_pdfium(interpreter: str) -> bool:
+    """Check an interpreter without importing optional audit dependencies here."""
+
+    try:
+        result = subprocess.run(
+            [interpreter, "-c", "import pypdfium2"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def find_audit_interpreter(nougat_cmd: str | None, manifest: dict[str, Any]) -> str | None:
+    """Reuse the Nougat environment's Python for pypdfium2-backed auditing."""
+
+    commands: list[str] = []
+    if nougat_cmd:
+        commands.append(nougat_cmd)
+    manifest_tool = manifest.get("tools", {}).get("nougat", {}) if isinstance(manifest.get("tools"), dict) else {}
+    if isinstance(manifest_tool, dict) and isinstance(manifest_tool.get("command"), str):
+        commands.append(manifest_tool["command"])
+
+    candidates: list[str] = []
+    for command in commands:
+        command_path = Path(command).expanduser()
+        interpreter = launcher_interpreter(str(command_path))
+        if interpreter:
+            candidates.append(interpreter)
+        sibling = command_path.parent / "python"
+        if executable_file(sibling):
+            candidates.append(str(sibling))
+    candidates.extend(
+        candidate
+        for candidate in (sys.executable, shutil.which("python3"), shutil.which("python"))
+        if candidate
+    )
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if audit_interpreter_has_pdfium(candidate):
+            return candidate
+    return None
+
+
+def audit_execution_failure_report(pdf_path: Path, message: str) -> dict[str, Any]:
+    try:
+        input_hash = sha256_file(pdf_path)
+    except OSError:
+        input_hash = None
+    return {
+        "schema": "1",
+        "status": "review_required",
+        "pdf_sha256": input_hash,
+        "coverage": {},
+        "coverage_by_page": {},
+        "findings": [],
+        "limitations": [
+            "OCR fidelity audit could not execute; inspect the extracted document manually.",
+            message,
+        ],
+        "execution": {"ok": False, "error": message},
+        "summary": {"detected_findings": 0, "active_findings": 0, "suppressed_findings": 0},
+    }
+
+
+def audit_report_summary(report: dict[str, Any]) -> dict[str, Any]:
+    execution = report.get("execution")
+    execution_ok = execution.get("ok", False) if isinstance(execution, dict) else False
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        findings = report.get("findings")
+        findings_list = findings if isinstance(findings, list) else []
+        summary = {
+            "detected_findings": len(findings_list),
+            "active_findings": sum(1 for finding in findings_list if isinstance(finding, dict) and finding.get("active", True)),
+            "suppressed_findings": 0,
+        }
+    coverage = report.get("coverage_summary")
+    if not isinstance(coverage, dict):
+        by_page = report.get("coverage")
+        values = by_page.values() if isinstance(by_page, dict) else []
+        coverage = {status: sum(1 for value in values if value == status) for status in ("full", "partial", "unavailable")}
+    return {
+        "status": report.get("status", "review_required"),
+        "execution_ok": execution_ok,
+        "detected_findings": summary.get("detected_findings", 0),
+        "active_findings": summary.get("active_findings", 0),
+        "suppressed_findings": summary.get("suppressed_findings", 0),
+        "coverage": coverage,
+    }
+
+
+def run_ocr_audit(
+    pdf_path: Path,
+    job_dir: Path,
+    nougat_cmd: str | None,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Run the audit subprocess and keep audit failures nonfatal."""
+
+    audit_json = job_dir / "ocr_audit.json"
+    audit_markdown = job_dir / "ocr_audit.md"
+    audit_json.unlink(missing_ok=True)
+    audit_markdown.unlink(missing_ok=True)
+    audit_script = Path(__file__).with_name("audit_ocr.py")
+    interpreter = find_audit_interpreter(nougat_cmd, manifest)
+    if interpreter is None:
+        message = "No Python interpreter with pypdfium2 was found for the OCR audit."
+        report = audit_execution_failure_report(pdf_path, message)
+        write_json(audit_json, report)
+        if not (job_dir / "ocr_audit_review.json").is_file():
+            write_json(job_dir / "ocr_audit_review.json", {"schema": "1", "resolutions": {}})
+        atomic_write_text(
+            audit_markdown,
+            "# OCR fidelity audit\n\nStatus: REVIEW REQUIRED\n\n"
+            f"Audit execution: failed — {message}\n",
+        )
+        print(f"OCR audit warning: {message}", file=sys.stderr)
+        return report
+
+    command = [
+        interpreter,
+        str(audit_script),
+        str(pdf_path),
+        "--output-dir",
+        str(job_dir),
+        "--nougat-md",
+        str(job_dir / "nougat.mmd"),
+        "--docling-md",
+        str(job_dir / "docling_decoded.md"),
+        "--combined-md",
+        str(job_dir / "combined.md"),
+    ]
+    audit_stderr = False
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+    except OSError as exc:
+        result = None
+        message = f"could not start OCR audit: {exc}"
+    else:
+        message = f"OCR audit exited with status {result.returncode}" if result.returncode else ""
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            audit_stderr = True
+            print(result.stderr, end="", file=sys.stderr)
+
+    report = load_manifest(audit_json)
+    if not report or not audit_json.is_file():
+        report = audit_execution_failure_report(pdf_path, message or "OCR audit produced no report.")
+        write_json(audit_json, report)
+        atomic_write_text(
+            audit_markdown,
+            "# OCR fidelity audit\n\nStatus: REVIEW REQUIRED\n\n"
+            f"Audit execution: failed — {report['execution']['error']}\n",
+        )
+    execution = report.get("execution")
+    if not isinstance(execution, dict) or not execution.get("ok", False):
+        error = execution.get("error", message or "audit failed") if isinstance(execution, dict) else (message or "audit failed")
+        if not audit_stderr:
+            print(f"OCR audit warning: {error}", file=sys.stderr)
+    elif message:
+        print(f"OCR audit warning: {message}", file=sys.stderr)
+    review_path = job_dir / "ocr_audit_review.json"
+    if not review_path.is_file():
+        write_json(review_path, {"schema": "1", "resolutions": {}})
+    return report
+
+
 def manifest_stage(manifest: dict[str, Any], stage: str) -> dict[str, Any]:
     stages = manifest.get("stages")
     if not isinstance(stages, dict):
@@ -1217,6 +1392,8 @@ def invalidate_stage_outputs(job_dir: Path, stage: str) -> None:
         job_dir / "docling_decoded.md",
         job_dir / "merge_report.json",
         job_dir / "timings.json",
+        job_dir / "ocr_audit.json",
+        job_dir / "ocr_audit.md",
         job_dir / "combined_for_tex.md",
         job_dir / "combined.tex",
     ):
@@ -1483,6 +1660,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep embedded Docling images in docling.md instead of decoding them.",
     )
     parser.add_argument("--merge-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--skip-ocr-audit",
+        action="store_true",
+        help="Skip the post-extraction OCR fidelity audit.",
+    )
     parser.add_argument("--normalize-math", action="store_true", help="Normalize bracketed math delimiters.")
     parser.add_argument("--to-latex", action="store_true", help="Generate LaTeX via Pandoc.")
     parser.add_argument("--title", help="Title metadata for Pandoc/YAML front matter.")
@@ -1736,10 +1918,32 @@ def main() -> int:
             f"{name}: {', '.join(errors)}" for name, errors in validation_errors.items() if errors
         )
         raise RuntimeError(f"Merged Markdown failed durable-asset validation: {details}")
+
+    # Keep merge and audit timings additive: the audit is a separate, optional
+    # post-validation stage and should not be counted twice in timings.json.
+    merge_duration = time.perf_counter() - merge_started
+    audit_duration = 0.0
+    if args.skip_ocr_audit:
+        (job_dir / "ocr_audit.json").unlink(missing_ok=True)
+        (job_dir / "ocr_audit.md").unlink(missing_ok=True)
+        merge_report["ocr_audit"] = {
+            "status": "skipped",
+            "execution_ok": None,
+            "detected_findings": 0,
+            "active_findings": 0,
+            "suppressed_findings": 0,
+            "coverage": {},
+        }
+        print("Skipping OCR fidelity audit (--skip-ocr-audit).", file=sys.stderr)
+    else:
+        audit_started = time.perf_counter()
+        audit_report = run_ocr_audit(pdf_path, job_dir, nougat_cmd, manifest)
+        audit_duration = time.perf_counter() - audit_started
+        merge_report["ocr_audit"] = audit_report_summary(audit_report)
+    write_json(job_dir / "merge_report.json", merge_report)
     manifest["merge_schema"] = MERGE_SCHEMA_VERSION
     manifest["updated_at"] = now_utc()
     write_json(manifest_path, manifest)
-    merge_duration = time.perf_counter() - merge_started
 
     timings = load_manifest(timings_path)
     if not isinstance(timings, dict):
@@ -1750,6 +1954,7 @@ def main() -> int:
             "stages": stage_timings or timings.get("stages", {}),
             "merge_seconds": round(merge_duration, 3),
             "figure_decode_seconds": round(decode_duration, 3),
+            "ocr_audit_seconds": round(audit_duration, 3),
             "figure_placement": args.figure_placement,
             "image_mode": actual_image_mode,
         }

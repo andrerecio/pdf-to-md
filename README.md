@@ -4,6 +4,8 @@ Convert a research PDF into structured Markdown using **Nougat-OCR** for text, e
 
 - **Nougat** is the canonical source for prose, headings, equations, and tables.
 - **Docling** supplies figures, captions, and footnote/layout evidence.
+- A conservative post-extraction OCR audit compares aligned content with the
+  PDF text layer and records review prompts without changing the extraction.
 - Runs are cached and resumable per-PDF (content-hash keyed), so re-running with `--resume` won't repeat OCR unless inputs change.
 
 ## Contents
@@ -31,9 +33,9 @@ Once installed as a skill, you can ask your AI assistant things like:
 - "Check that Nougat and Docling are installed before converting `thesis.pdf`."
 - "Regenerate just the merge output for the existing job, don't rerun OCR."
 - "Convert `paper.pdf` to Markdown and also produce a compiled LaTeX/PDF version."
-- "Review `merge_report.json` for the last conversion and tell me which figures were unplaced."
+- "Review `merge_report.json` and `ocr_audit.md` for the last conversion."
 
-The agent will follow the workflow documented in `SKILL.md`: check for existing Nougat/Docling installs, provision the runtime only if needed, pick a profile, run extraction with `--resume`, and review `combined.md`, `figures/`, and `merge_report.json`.
+The agent will follow the workflow documented in `SKILL.md`: check for existing Nougat/Docling installs, provision the runtime only if needed, pick a profile, run extraction with `--resume`, and review `combined.md`, `figures/`, `merge_report.json`, and the OCR-audit artifacts.
 
 ## Use from the terminal
 
@@ -86,6 +88,7 @@ Key options for `scripts/extract_pdf_to_md.py`:
 | `--resume` | Reuse valid cached stage outputs (content-hash keyed); re-normalizes cached Docling links. |
 | `--force` | Recompute both external stages from scratch. |
 | `--merge-only` | Rebuild the merge/assets from an existing hashed job without invoking Nougat or Docling. |
+| `--skip-ocr-audit` | Explicitly disable the post-extraction OCR fidelity check. Findings are nonfatal by default. |
 | `--figure-placement appended\|inline` | `appended` (default) places all figures under `## Figures`; `inline` anchors figures near their source text, with low-confidence figures placed under `## Unplaced Figures`. |
 | `--image-mode embedded` | Use embedded Docling images instead of referenced image export. |
 | `--keep-base64` | Retain data URIs in `docling.md` (final outputs still decode figures). |
@@ -109,14 +112,32 @@ outputs/<pdf-stem>-<content-hash>/
   docling_decoded.md      # merge input with images copied/decoded into figures/
   figures/
   combined.md             # final merged Markdown artifact
-  merge_report.json       # figure placement, footnotes, validation (schema 3)
+  merge_report.json       # merge/structural validation + OCR summary (schema 4)
+  ocr_audit.json          # machine-readable fidelity findings (audit schema 1)
+  ocr_audit.md            # concise human review report
+  ocr_audit_review.json   # persistent finding-resolution ledger
   manifest.json           # PDF hash, profile, args, tool/runtime versions
-  timings.json            # stage/merge/decode timings
+  timings.json            # stage/merge/decode/audit timings
   combined_for_tex.md      # optional, with --to-latex
   combined.tex             # optional, with --to-latex
 ```
 
 All local image references in final Markdown are durable relative paths (e.g. `figures/figure-001.png`) — no absolute paths or `.staging/` references.
+
+### OCR review loop
+
+Inspect only the PDF page or bounding box named by each active finding. If the
+PDF disagrees with the extraction, repair `nougat.mmd` (or `docling.md` for an
+inserted caption/footnote), then batch corrections and rerun with `--merge-only`.
+If the PDF agrees, record `source_matches` or `false_positive`:
+
+```bash
+python3 scripts/audit_ocr.py resolve JOB_DIR FINDING_ID source_matches
+```
+
+The audit never auto-corrects content. A clear result means no active bounded
+discrepancies were found within the reported coverage; scanned or poorly
+ordered pages remain explicitly marked `partial` or `unavailable`.
 
 ## Profiles
 
@@ -150,7 +171,7 @@ See [INSTALL.md](INSTALL.md#troubleshooting) for the complete table.
 ## Repository layout
 
 ```
-scripts/    extract_pdf_to_md.py, check_deps.py, bootstrap_runtime.py, benchmarks, etc.
+scripts/    extract_pdf_to_md.py, audit_ocr.py, check_deps.py, bootstrap_runtime.py, benchmarks, etc.
 requirements/  pinned deps for the nougat/ and docling/ isolated environments
 references/  workflow.md, io-spec.md, tooling.md (deep-dive docs referenced by SKILL.md)
 tests/      test_pipeline.py, test_output_contract.py

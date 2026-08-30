@@ -18,6 +18,9 @@ source path changes.
           figure-001.png
         combined.md
         merge_report.json
+        ocr_audit.json
+        ocr_audit.md
+        ocr_audit_review.json
         manifest.json
         timings.json
         combined_for_tex.md
@@ -40,13 +43,26 @@ The LaTeX files are optional and appear only when --to-latex is used.
   once and has a durable relative link.
 - `combined.md` is the final merged Markdown. It must contain no absolute local
   paths, `.staging/` paths, unresolved local assets, or formula placeholders.
-- `merge_report.json` uses merge schema 3 and records placed/unplaced figure
-  counts, fallback reasons, footnote reconstruction, asset/path validation, and
-  warnings. Treat reported validation failures as conversion failures.
+- `merge_report.json` uses merge schema 4 and records placed/unplaced figure
+  counts, fallback reasons, footnote reconstruction, structural asset/path
+  validation, an OCR-audit summary, and warnings. Treat structural validation
+  failures as conversion failures; OCR findings are nonfatal review prompts.
+- `ocr_audit.json` uses audit schema 1. It records `clear` or
+  `review_required`, one coverage value (`full`, `partial`, or `unavailable`)
+  per PDF page, stable finding IDs/fingerprints, optional PDF character boxes,
+  content origin, finding type, confidence, extracted/reference snippets, and
+  contextual evidence. `ocr_audit.md` is the human-readable report.
+- `ocr_audit_review.json` is a persistent schema-1 resolution ledger. A
+  `source_matches` or `false_positive` classification suppresses only the
+  same finding fingerprint; a changed PDF or relevant extracted content makes
+  the finding active again. Use `scripts/audit_ocr.py resolve` to record a
+  classification.
 - `manifest.json` records the input hash, profile, external-stage arguments,
   tool versions, runtime, and completed stages. External OCR cache keys are
   independent of merge/normalization settings.
-- `timings.json` records external-stage, merge, and image-decoding timings.
+- `timings.json` records external-stage, merge, image-decoding, and
+  `ocr_audit_seconds` timings. Audit time does not participate in external
+  cache keys.
 
 The default `--figure-placement appended` mode preserves Nougat's body and
 adds normalized figure blocks once under `## Figures`. With explicit
@@ -68,8 +84,9 @@ re-normalizes cached Docling Markdown/assets and rebuilds the merge artifacts.
 authorize reuse.
 
 `--merge-only` targets the existing content-hashed job for the supplied PDF and
-performs normalization, figure decoding, footnote reconstruction, merging, and
-report generation without invoking Nougat or Docling. It is the supported
+performs normalization, figure decoding, footnote reconstruction, merging,
+structural validation, and the OCR audit without invoking Nougat or Docling. It
+is the supported
 repair path after a completed OCR run. A missing or invalid source asset is
 reported and may require a Docling rerun; a missing durable asset invalidates
 only the affected Docling cache where possible.

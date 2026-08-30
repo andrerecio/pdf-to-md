@@ -732,6 +732,22 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(pipeline.main(), 0)
         self.assertEqual((self.counter_dir / "nougat").read_text(), "1")
         self.assertEqual((self.counter_dir / "docling").read_text(), "1")
+        job_dir = next((self.root / "outputs").iterdir())
+        merge_report = json.loads((job_dir / "merge_report.json").read_text())
+        self.assertEqual(merge_report["schema"], "4")
+        self.assertIn("ocr_audit", merge_report)
+        self.assertTrue((job_dir / "ocr_audit.json").is_file())
+        timings = json.loads((job_dir / "timings.json").read_text())
+        self.assertIn("ocr_audit_seconds", timings)
+
+        # An explicit skip also removes a stale report, while preserving the
+        # expensive external-stage cache and the resolution ledger.
+        self.assertEqual(self.run_pipeline(pdf, "--resume", "--skip-ocr-audit"), 0)
+        self.assertFalse((job_dir / "ocr_audit.json").exists())
+        self.assertFalse((job_dir / "ocr_audit.md").exists())
+        skipped_report = json.loads((job_dir / "merge_report.json").read_text())
+        self.assertEqual(skipped_report["ocr_audit"]["status"], "skipped")
+        self.assertTrue((job_dir / "ocr_audit_review.json").is_file())
 
     def test_diagnostics_report_json_is_machine_readable(self) -> None:
         args = type(
