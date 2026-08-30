@@ -1,8 +1,8 @@
 # Benchmarks
 
 The extraction stages are dominated by model inference, so benchmark both the
-external tools and the pure-Python merge stage. Keep a small representative
-corpus outside the repository when PDFs are copyrighted.
+external tools and the pure-Python merge/audit stages. Keep a small
+representative corpus outside the repository when PDFs are copyrighted.
 
 After a conversion, benchmark the pure-Python merge stage:
 
@@ -14,8 +14,8 @@ canonical prose, heading, equation, and table body; inline mode measures only
 the monotonic figure-anchor work and any append-with-warning fallback.
 
 To benchmark complete runs, use the external-tool harness. It records wall
-time, stage timings, merge time, figure-decoding time, output size/hash, job
-disk usage, and peak child RSS where the host exposes it:
+time, stage timings, merge time, figure-decoding time, OCR-audit time, output
+size/hash, job disk usage, and peak child RSS where the host exposes it:
 
     python3 scripts/benchmark_pipeline.py /path/to/paper.pdf \
       --profile fast \
@@ -48,10 +48,12 @@ merge-only path with the same PDF and output root:
 Confirm that the repair does not increment either external-stage counter (or
 rerun either command), and inspect `merge_report.json` for zero unresolved
 assets, absolute paths, `.staging/` references, and formula placeholders.
-Record placed/unplaced figure counts, reconstructed footnotes, and warnings
-alongside wall time and output hashes. A missing durable asset should invalidate
-only the affected Docling cache on `--resume`; report the resulting Docling
-rerun separately from the merge cost.
+Inspect `ocr_audit.json` for execution status, per-page coverage, active
+findings, and limitations. Record placed/unplaced figure counts,
+reconstructed footnotes, audit findings, and warnings alongside wall time and
+output hashes. A missing durable asset should invalidate only the affected
+Docling cache on `--resume`; report the resulting Docling rerun separately
+from the merge and `ocr_audit_seconds` costs.
 
 Compare timings.json and the benchmark output for:
 
@@ -62,4 +64,5 @@ Compare timings.json and the benchmark output for:
 - serial versus --parallel-stages execution.
 - cached `--resume`/`--merge-only` repair versus a full OCR run;
 - successful versus fallback inline figure placement and its warning count;
-- merge-report validation status and final figure asset count.
+- merge-report validation status and final figure asset count;
+- OCR-audit coverage, active findings, and `ocr_audit_seconds`.

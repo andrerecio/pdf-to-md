@@ -31,8 +31,8 @@ figures, captions, and footnote/layout evidence to the merge step.
    - fast uses Nougat small with conservative batch settings.
    - quality uses Nougat base for higher-quality academic extraction.
 5. Run extraction with --resume for stage-level caching.
-6. Review combined.md, figures/, and merge_report.json in the generated hashed
-   job directory.
+6. Review combined.md, figures/, merge_report.json, and the OCR-audit report in
+   the generated hashed job directory.
 
 Example:
 
@@ -68,6 +68,9 @@ Each PDF gets a directory named <safe-stem>-<content-hash> containing:
     figures/
     combined.md
     merge_report.json
+    ocr_audit.json
+    ocr_audit.md
+    ocr_audit_review.json
     manifest.json
     timings.json
 
@@ -95,9 +98,28 @@ Optional LaTeX output is created with --to-latex when Pandoc is installed.
   merging. `--merge-only` performs the same merge/asset repair from an existing
   hashed job without invoking Nougat or Docling, so a long OCR run need not be
   repeated.
-- `merge_report.json` (merge schema 3) records figure placement, fallback
-  warnings, footnote reconstruction, and asset/Markdown validation. Review it
-  alongside combined.md when accepting a conversion.
+- A post-extraction OCR fidelity audit runs after structural validation by
+  default. It uses the PDF text layer and character boxes plus cached Docling
+  caption/footnote evidence; it never edits content or starts another OCR
+  pass. Use `--skip-ocr-audit` only when the check is intentionally disabled.
+- `ocr_audit.json` (audit schema 1) records clear/review-required status,
+  per-page coverage, bounded substitutions, confidence, snippets, context, and
+  coverage limitations. `ocr_audit.md` is the concise review view, and
+  `ocr_audit_review.json` preserves human classifications across merge-only
+  reruns.
+- `merge_report.json` (merge schema 4) records figure placement, fallback
+  warnings, footnote reconstruction, structural asset/Markdown validation,
+  and an OCR-audit summary. Structural `validation.ok` remains independent of
+  audit findings, which are nonfatal.
+- Review every active audit finding against the indicated PDF page or bounding
+  box. If the PDF disagrees, repair the source artifact—normally `nougat.mmd`,
+  or `docling.md` for an inserted caption/footnote. If it agrees, classify it
+  as `source_matches` or `false_positive` with the resolver in
+  `scripts/audit_ocr.py`; use `confirmed_extraction_error` for a finding that
+  was visually confirmed and repaired. Batch confirmed corrections, then rerun
+  with `--merge-only` and the original merge/LaTeX options. Finish when no
+  active findings remain, while reporting any `full`, `partial`, or
+  `unavailable` coverage limitations.
 - Before LaTeX output is written, the runner checks for unresolved local assets,
   staging paths, formula placeholders, and unsupported raw Unicode for the
   documented pdfLaTeX route. Pandoc is run with the job directory and its

@@ -228,8 +228,9 @@ cd "$SKILL_DIR"
 # 3. Replace this placeholder with the job directory printed above.
 JOB_DIR="$OUTPUT_ROOT/<pdf-stem>-<content-hash>"
 
-# 4. Inspect the machine-readable merge and validation report.
+# 4. Inspect the machine-readable merge, validation, and OCR-audit reports.
 "$RUNNER_PYTHON" -m json.tool "$JOB_DIR/merge_report.json"
+"$RUNNER_PYTHON" -m json.tool "$JOB_DIR/ocr_audit.json"
 
 # 5. Compile from the job directory so relative figure paths resolve.
 cd "$JOB_DIR"
@@ -254,6 +255,7 @@ Useful options:
     --force                         Recompute both external stages.
     --figure-placement inline       Try source-position figure placement.
     --merge-only                    Rebuild from the existing hashed job cache.
+    --skip-ocr-audit                Explicitly disable the post-extraction fidelity audit.
     --image-mode embedded           Use embedded Docling images.
     --keep-base64                   Retain data URIs in docling.md; final outputs still decode figures.
     --parallel-stages               Opt into concurrent Nougat/Docling execution.
@@ -275,8 +277,11 @@ The current output directory is:
       figures/
       combined.md
       merge_report.json
+      ocr_audit.json
+      ocr_audit.md
+      ocr_audit_review.json
       manifest.json
-      timings.json
+      timings.json                 # includes ocr_audit_seconds
       combined_for_tex.md            optional
       combined.tex                  optional
 
@@ -295,6 +300,21 @@ external stages. A resume also normalizes cached Docling image links and
 repairs durable assets when possible. To repair or regenerate only merge
 artifacts after OCR has completed, pass --merge-only with the same PDF,
 --profile, and --output-dir; this does not invoke Nougat or Docling.
+
+Every normal and merge-only run audits the merged content after structural
+validation. The audit uses pypdfium2 from the Nougat environment, so the
+runner environment stays dependency-light. Findings are nonfatal and are
+review prompts, not automatic corrections. Inspect only the indicated PDF
+page or bounding box. If the PDF disagrees, repair nougat.mmd (or docling.md
+for an inserted caption/footnote), then rerun --merge-only with the original
+merge/LaTeX options. If it agrees, record the classification in the persistent
+ledger, for example:
+
+    python3 "$SKILL_DIR/scripts/audit_ocr.py" resolve \
+      "$JOB_DIR" FINDING_ID source_matches
+
+Batch confirmed corrections before rerunning. Finish when no active findings
+remain, while reporting pages whose coverage is partial or unavailable.
 
 Pass tool-specific settings without shell-quoted argument strings:
 
@@ -319,10 +339,14 @@ inline mode anchors figures to Nougat paragraph boundaries using monotonic
 context. If an anchor is ambiguous or below the confidence threshold, that
 figure is placed once under ## Unplaced Figures and a warning is recorded.
 Footnote markers and definitions are reconstructed for both modes. Review
-merge_report.json (merge schema 3) for placed/unplaced figures, footnote
-status, validation errors, and warnings. manifest.json contains external-stage cache keys and
-tool/runtime metadata; timings.json contains stage, merge, and image-decoding
-timings. See references/io-spec.md for the complete contract.
+merge_report.json (merge schema 4) for placed/unplaced figures, footnote
+status, structural validation errors, OCR-audit summary, and warnings.
+ocr_audit.json uses audit schema 1 and records per-page coverage, bounded
+prose/digit/math substitutions, contextual evidence, and limitations;
+ocr_audit.md is the human-readable view and ocr_audit_review.json is the
+persistent resolution ledger. manifest.json contains external-stage cache keys
+and tool/runtime metadata; timings.json contains stage, merge, image-decoding,
+and OCR-audit timings. See references/io-spec.md for the complete contract.
 
 ## LaTeX output
 
@@ -377,9 +401,13 @@ be retained for another installation.
 | Long-running command terminated | Increase the caller's timeout; OCR duration depends on page count and hardware. |
 | Missing or unresolved figure | Check merge_report.json, confirm the target exists below figures/ or docling_assets/, and rerun with --resume. If OCR stages are valid, use --merge-only; a missing source asset may require rerunning Docling. |
 | Absolute path or .staging/ appears in Markdown | Do not edit the final file by hand. Run --resume or --merge-only to re-normalize cached Docling output, then inspect the validation errors in merge_report.json. |
+| OCR audit cannot execute | Check that the Nougat interpreter imports pypdfium2. The conversion remains usable, but ocr_audit.json will be review-required with an explicit coverage limitation. |
+| OCR audit reports a finding | Inspect only its PDF page/bounding box. Repair the source artifact only when the PDF disagrees; otherwise resolve it with source_matches or false_positive and rerun --merge-only. |
 | LaTeX reports Unicode/input errors | The pdfLaTeX preflight rejects unsupported raw Unicode. Replace or encode the source character, choose a Unicode-capable TeX engine outside this documented route, or fix the upstream Markdown before retrying. |
 | LaTeX reports missing graphics | Compile from the job directory with the command above and verify figures/ and docling_assets/ are present; unresolved local paths are a merge/preflight error. |
 
 Nougat is designed for academic documents and performs best on documents
-similar to its training data. Review combined.md, the figure directories, and
-merge_report.json after every conversion.
+similar to its training data. Review combined.md, the figure directories,
+merge_report.json, and ocr_audit.md after every conversion. A clear audit is
+limited to the reported coverage; scanned mathematics and poorly ordered
+tables can remain partial or unavailable.

@@ -128,6 +128,7 @@ def main() -> int:
                 "stage_timings": timings.get("stages", {}),
                 "merge_seconds": timings.get("merge_seconds"),
                 "figure_decode_seconds": timings.get("figure_decode_seconds"),
+                "ocr_audit_seconds": timings.get("ocr_audit_seconds"),
                 "cache_requested": args.resume,
             }
         )
