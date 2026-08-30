@@ -749,6 +749,25 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(skipped_report["ocr_audit"]["status"], "skipped")
         self.assertTrue((job_dir / "ocr_audit_review.json").is_file())
 
+    def test_audit_interpreter_discovers_windows_venv_python(self) -> None:
+        nougat = self.root / "nougat.exe"
+        interpreter = self.root / "python.exe"
+        nougat.write_bytes(b"launcher")
+        interpreter.write_bytes(b"python")
+        nougat.chmod(nougat.stat().st_mode | stat.S_IXUSR)
+        interpreter.chmod(interpreter.stat().st_mode | stat.S_IXUSR)
+
+        with (
+            patch.object(pipeline, "launcher_interpreter", return_value=None),
+            patch.object(
+                pipeline,
+                "audit_interpreter_has_pdfium",
+                side_effect=lambda candidate: Path(candidate) == interpreter,
+            ),
+            patch.object(pipeline.shutil, "which", return_value=None),
+        ):
+            self.assertEqual(pipeline.find_audit_interpreter(str(nougat), {}), str(interpreter))
+
     def test_diagnostics_report_json_is_machine_readable(self) -> None:
         args = type(
             "Args",
@@ -760,7 +779,10 @@ class PipelineTests(unittest.TestCase):
                 "output_dir": self.root / "outputs",
             },
         )()
-        with patch.dict(os.environ, self.env, clear=False):
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(check_deps, "launcher_details", return_value={}),
+        ):
             report = check_deps.build_report(args)
         self.assertTrue(report["ok"])
         self.assertEqual(report["commands"]["nougat"]["version"], "fake-nougat 1.0")

@@ -1175,9 +1175,10 @@ def find_audit_interpreter(nougat_cmd: str | None, manifest: dict[str, Any]) -> 
         interpreter = launcher_interpreter(str(command_path))
         if interpreter:
             candidates.append(interpreter)
-        sibling = command_path.parent / "python"
-        if executable_file(sibling):
-            candidates.append(str(sibling))
+        for interpreter_name in ("python", "python.exe"):
+            sibling = command_path.parent / interpreter_name
+            if executable_file(sibling):
+                candidates.append(str(sibling))
     candidates.extend(
         candidate
         for candidate in (sys.executable, shutil.which("python3"), shutil.which("python"))

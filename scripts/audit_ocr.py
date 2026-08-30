@@ -483,6 +483,8 @@ def _latex_command_replacement(match: re.Match[str]) -> str:
         return " +- "
     if command in {"mp"}:
         return " -+ "
+    if command == "infty":
+        return " infinity "
     if command in {"sqrt"}:
         return " sqrt "
     if command in {
@@ -994,6 +996,7 @@ def compare_token_sequences(
     extracted_math_spans: Sequence[tuple[int, int]] = (),
     anchor_width: int | None = None,
     include_bbox: bool = True,
+    content_origin: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return only bounded substitutions with exact context on both sides."""
 
@@ -1053,7 +1056,7 @@ def compare_token_sequences(
         finding: dict[str, Any] = {
             "page": page_number,
             "origin": origin,
-            "content_origin": origin,
+            "content_origin": content_origin or origin,
             "type": kind,
             "confidence": _confidence(kind, before, after, anchor_width),
             "reference": reference_snippet,
@@ -1228,6 +1231,7 @@ def audit_docling_fallback(
     docling_text: str,
     nougat_text: str,
     pages: Sequence[PdfPage],
+    unavailable_pages: Sequence[int],
 ) -> list[dict[str, Any]]:
     """Use page-marked Docling prose as a lower-confidence reference only."""
 
@@ -1235,8 +1239,11 @@ def audit_docling_fallback(
         return []
     nougat_normalized = normalize_with_mapping(nougat_text)
     nougat_tokens = semantic_tokens(nougat_normalized)
+    unavailable = set(unavailable_pages)
     findings: list[dict[str, Any]] = []
     for page_hint, chunk in split_docling_page_chunks(docling_text, len(pages)):
+        if page_hint not in unavailable:
+            continue
         reference_text = prose_only(chunk)
         if len(semantic_tokens(normalize_with_mapping(reference_text))) < 8:
             continue
@@ -1264,6 +1271,7 @@ def audit_docling_fallback(
                 formula_spans(nougat_text),
                 anchor.width,
                 include_bbox=False,
+                content_origin="nougat_body",
             )
         for finding in fallback_findings:
             # The fallback is explicitly prose-only; mathematical content is
@@ -1289,6 +1297,18 @@ def _finding_fingerprint(pdf_hash: str, finding: dict[str, Any]) -> str:
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _finding_location_key(finding: dict[str, Any]) -> tuple[str, ...]:
+    bbox = finding.get("bbox")
+    if isinstance(bbox, dict):
+        return ("bbox", json.dumps(bbox, sort_keys=True, separators=(",", ":")))
+    evidence = finding.get("contextual_evidence", {})
+    return (
+        "context",
+        normalize_text(str(evidence.get("before", ""))).casefold(),
+        normalize_text(str(evidence.get("after", ""))).casefold(),
+    )
 
 
 def _finding_id(finding: dict[str, Any]) -> str:
@@ -1491,7 +1511,7 @@ def audit_document(
             + "."
         )
     if unavailable_pages and docling_text:
-        fallback = audit_docling_fallback(docling_text, nougat_text, pages)
+        fallback = audit_docling_fallback(docling_text, nougat_text, pages, unavailable_pages)
         if fallback:
             findings.extend(fallback)
             limitations.append("Docling was used as a lower-confidence prose reference where page markers allowed strong alignment.")
@@ -1509,6 +1529,7 @@ def audit_document(
             finding.get("type"),
             normalize_text(str(finding.get("reference", ""))).casefold(),
             normalize_text(str(finding.get("extracted", ""))).casefold(),
+            _finding_location_key(finding),
         )
         previous = unique.get(key)
         if previous is None or previous.get("origin") != "nougat_body" and finding.get("origin") == "nougat_body":

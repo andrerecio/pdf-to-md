@@ -29,6 +29,7 @@ class OcrAuditTests(unittest.TestCase):
             audit.normalize_text(r"final cooperate \\sigma_z^{-2} \\alpha <= \\beta - 1"),
         )
         self.assertEqual(audit.normalize_text("x₁²"), "x 1 2")
+        self.assertEqual(audit.normalize_text("∞"), audit.normalize_text(r"\infty"))
 
     def test_page_21_math_symbol_substitution_is_reported(self) -> None:
         reference = "Context before the equation is σ_z⁻² and the context after agrees."
@@ -159,6 +160,35 @@ class OcrAuditTests(unittest.TestCase):
             self.assertEqual(changed_report["status"], "review_required")
             self.assertTrue(any(item.get("active", True) for item in changed_report["findings"]))
 
+    def test_repeated_same_page_substitutions_remain_distinct(self) -> None:
+        pdf_text = (
+            "First stable context has estimate 1.25 and several matching words after it today. "
+            "Second different context has estimate 1.25 and several matching words after it tomorrow."
+        )
+        nougat_text = (
+            "First stable context has estimate 1.35 and several matching words after it today. "
+            "Second different context has estimate 1.35 and several matching words after it tomorrow."
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pdf = root / "paper.pdf"
+            nougat = root / "nougat.mmd"
+            combined = root / "combined.md"
+            pdf.write_bytes(b"synthetic pdf")
+            nougat.write_text(nougat_text, encoding="utf-8")
+            combined.write_text(nougat_text, encoding="utf-8")
+            with patch.object(audit, "extract_pdf_pages", return_value=[self.fake_page(pdf_text)]):
+                first = audit.run_audit(pdf, nougat, None, combined, root)
+
+            self.assertEqual(first["summary"]["detected_findings"], 2)
+            self.assertEqual(len({finding["id"] for finding in first["findings"]}), 2)
+            self.assertEqual(audit.resolve_finding(root, first["findings"][0]["id"], "false_positive"), 0)
+
+            with patch.object(audit, "extract_pdf_pages", return_value=[self.fake_page(pdf_text)]):
+                second = audit.run_audit(pdf, nougat, None, combined, root)
+            self.assertEqual(second["status"], "review_required")
+            self.assertEqual(second["summary"]["active_findings"], 1)
+
     def test_clear_audit_persists_machine_report_human_report_and_empty_ledger(self) -> None:
         text = "A stable exact phrase remains in this document without substitutions."
         with tempfile.TemporaryDirectory() as temporary:
@@ -204,10 +234,24 @@ class OcrAuditTests(unittest.TestCase):
                 report = audit.run_audit(pdf, nougat, docling, combined, root)
         self.assertEqual(report["coverage"]["1"], "unavailable")
         self.assertEqual(report["findings"][0]["origin"], "docling_prose_fallback")
+        self.assertEqual(report["findings"][0]["content_origin"], "nougat_body")
         self.assertEqual(report["findings"][0]["type"], "prose")
         self.assertLessEqual(report["findings"][0]["confidence"], 0.74)
         self.assertEqual(report["findings"][0]["confidence_basis"], "lower-confidence-docling-fallback")
         self.assertIn("Mathematical coverage is limited", " ".join(report["limitations"]))
+
+    def test_docling_fallback_skips_pages_with_pdf_text_coverage(self) -> None:
+        page_one_nougat = "The stable prose anchor remains in this document and the conclusion agrees today now."
+        page_one_docling = "The stable prose anchor remains in this document and the conclusion changes today now."
+        page_two = "Another reliable passage remains available for fallback comparison on page two today."
+        docling = f"<!-- page 1 -->\n{page_one_docling}\n<!-- page 2 -->\n{page_two}\n"
+        nougat = f"{page_one_nougat}\n{page_two}\n"
+        pages = [
+            self.fake_page(page_one_nougat, 1),
+            audit.PdfPage(2, "", [], (100.0, 100.0), [], []),
+        ]
+
+        self.assertEqual(audit.audit_docling_fallback(docling, nougat, pages, [2]), [])
 
 
 if __name__ == "__main__":
