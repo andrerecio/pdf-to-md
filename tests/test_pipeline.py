@@ -24,7 +24,11 @@ import check_deps  # noqa: E402
 import benchmark_pipeline  # noqa: E402
 import extract_pdf_to_md as pipeline  # noqa: E402
 from parse_docling_figures import decode_docling_markdown, normalize_docling_markdown  # noqa: E402
-from prepare_md_for_latex import fix_fences, validate_latex_input  # noqa: E402
+from prepare_md_for_latex import (  # noqa: E402
+    fix_fences,
+    pdftex_header_includes,
+    validate_latex_input,
+)
 
 
 PNG_BYTES = b"fake-png-bytes"
@@ -37,6 +41,7 @@ def write_fake_cli(path: Path, tool: str) -> Path:
     source = f"""#!/usr/bin/env python3
 from pathlib import Path
 import base64
+import json
 import os
 import sys
 
@@ -78,6 +83,11 @@ else:
     else:
         image = "![sample](data:image/png;base64,{encoded_png})"
     (output_dir / f"{{pdf.stem}}.md").write_text("Figure 1: Sample\\n\\n" + image + "\\n")
+    raw_json = {{"texts": [], "body": {{"children": []}}}}
+    json_source = os.environ.get("FAKE_DOCLING_JSON")
+    if json_source:
+        raw_json = json.loads(Path(json_source).read_text(encoding="utf-8"))
+    (output_dir / f"{{pdf.stem}}.json").write_text(json.dumps(raw_json), encoding="utf-8")
 """
     path.write_text(source, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -129,8 +139,13 @@ class PipelineTests(unittest.TestCase):
         return tuple(entries)
 
     @staticmethod
-    def _artifact_fingerprint(job_dir: Path) -> dict[str, str]:
-        names = ("docling.md", "docling_decoded.md", "combined.md", "merge_report.json")
+    def _artifact_fingerprint(job_dir: Path, pdf: Path) -> dict[str, str]:
+        names = (
+            "docling.md",
+            "docling_decoded.md",
+            f"{pipeline.safe_stem(pdf)}.md",
+            "merge_report.json",
+        )
         return {
             name: hashlib.sha256((job_dir / name).read_bytes()).hexdigest()
             for name in names
@@ -153,7 +168,9 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue((job_dir / "docling_assets" / "image-1.png").is_file())
         self.assertFalse((job_dir / ".staging").exists())
         self.assertTrue((job_dir / "figures" / "figure-001.png").is_file())
-        self.assertIn("## Figures", (job_dir / "combined.md").read_text())
+        self.assertTrue((job_dir / "docling_code.json").is_file())
+        self.assertIn("## Figures", (job_dir / "paper.md").read_text())
+        self.assertFalse((job_dir / "combined.md").exists())
 
         self.assertEqual(self.run_pipeline(pdf, "--resume"), 0)
         self.assertEqual((self.counter_dir / "nougat").read_text(), "1")
@@ -196,7 +213,10 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.run_pipeline(pdf, "--merge-only", output_dir=spaced_output), 0)
         self.assertEqual((self.counter_dir / "nougat").read_text(), "1")
         self.assertEqual((self.counter_dir / "docling").read_text(), "1")
-        self.assertNotIn(".staging", (job_dir / "combined.md").read_text(encoding="utf-8"))
+        self.assertNotIn(
+            ".staging",
+            (job_dir / "paper_absolute-assets.md").read_text(encoding="utf-8"),
+        )
 
     def test_resume_and_merge_only_are_idempotent_and_collapse_legacy_prefixes(self) -> None:
         pdf = self.root / "idempotent (absolute).pdf"
@@ -208,18 +228,18 @@ class PipelineTests(unittest.TestCase):
         job_dir = next(output_dir.iterdir())
         self.assertEqual((self.counter_dir / "nougat").read_text(), "1")
         self.assertEqual((self.counter_dir / "docling").read_text(), "1")
-        baseline_artifacts = self._artifact_fingerprint(job_dir)
+        baseline_artifacts = self._artifact_fingerprint(job_dir, pdf)
         baseline_assets = self._tree_fingerprint(job_dir / "docling_assets")
         baseline_figures = self._tree_fingerprint(job_dir / "figures")
 
         for _ in range(3):
             self.assertEqual(self.run_pipeline(pdf, "--resume", output_dir=output_dir), 0)
-            self.assertEqual(self._artifact_fingerprint(job_dir), baseline_artifacts)
+            self.assertEqual(self._artifact_fingerprint(job_dir, pdf), baseline_artifacts)
             self.assertEqual(self._tree_fingerprint(job_dir / "docling_assets"), baseline_assets)
             self.assertEqual(self._tree_fingerprint(job_dir / "figures"), baseline_figures)
         for _ in range(3):
             self.assertEqual(self.run_pipeline(pdf, "--merge-only", output_dir=output_dir), 0)
-            self.assertEqual(self._artifact_fingerprint(job_dir), baseline_artifacts)
+            self.assertEqual(self._artifact_fingerprint(job_dir, pdf), baseline_artifacts)
             self.assertEqual(self._tree_fingerprint(job_dir / "docling_assets"), baseline_assets)
             self.assertEqual(self._tree_fingerprint(job_dir / "figures"), baseline_figures)
 
@@ -244,12 +264,12 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn("docling_assets/docling_assets", repaired)
         self.assertFalse((job_dir / "docling_assets" / "docling_assets").exists())
 
-        repaired_baseline = self._artifact_fingerprint(job_dir)
+        repaired_baseline = self._artifact_fingerprint(job_dir, pdf)
         repaired_assets = self._tree_fingerprint(job_dir / "docling_assets")
         repaired_figures = self._tree_fingerprint(job_dir / "figures")
         for _ in range(3):
             self.assertEqual(self.run_pipeline(pdf, "--merge-only", output_dir=output_dir), 0)
-            self.assertEqual(self._artifact_fingerprint(job_dir), repaired_baseline)
+            self.assertEqual(self._artifact_fingerprint(job_dir, pdf), repaired_baseline)
             self.assertEqual(self._tree_fingerprint(job_dir / "docling_assets"), repaired_assets)
             self.assertEqual(self._tree_fingerprint(job_dir / "figures"), repaired_figures)
         self.assertEqual((self.counter_dir / "nougat").read_text(), "1")
@@ -291,6 +311,74 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("Unplaced Figures", ambiguous)
         self.assertEqual(ambiguous_report["figures"]["unplaced"], 1)
         self.assertTrue(ambiguous_report["warnings"])
+
+    def test_rbc_hybrid_code_reflows_three_pages_into_one_numbered_fence(self) -> None:
+        nougat = (RBC_FIXTURE_ROOT / "nougat_code.mmd").read_text(encoding="utf-8")
+        sidecar = json.loads((RBC_FIXTURE_ROOT / "docling_code.json").read_text(encoding="utf-8"))
+
+        merged, report = pipeline.merge_outputs_with_report(
+            nougat,
+            "",
+            "appended",
+            False,
+            sidecar["groups"],
+        )
+
+        self.assertEqual(merged.count("```"), 2)
+        code = merged.split("```", 2)[1].strip().splitlines()
+        self.assertEqual(len(code), 89)
+        self.assertEqual([int(line.split(maxsplit=1)[0]) for line in code], list(range(1, 90)))
+        self.assertEqual(code[1], "2")
+        self.assertIn("load param_rbc_moments;", code[6])
+        self.assertIn("set_param_value", code[7])
+        self.assertIn("K(-1)^(alpha)*N^(-alpha)", code[29])
+        self.assertIn("logY -logN", code[59])
+        self.assertIn("stoch_simul", code[88])
+        self.assertIn("hp_filter=1600", code[88])
+        self.assertIn("∆", merged)
+        self.assertNotIn("ˆ", merged)
+        self.assertNotIn("−", merged)
+        self.assertGreater(merged.index("This prose must remain outside"), merged.rindex("```"))
+
+        code_report = report["code_blocks"]
+        self.assertEqual(report["schema"], "5")
+        self.assertEqual(code_report["replaced"], 1)
+        self.assertEqual(code_report["fallback"], 0)
+        self.assertEqual(code_report["blocks"][0]["pages"], [10, 11, 12])
+        self.assertEqual(code_report["blocks"][0]["line_range"], [1, 89])
+        self.assertEqual(code_report["blocks"][0]["replacement_count"], 1)
+        self.assertIsNone(code_report["blocks"][0]["fallback_reason"])
+
+    def test_hybrid_code_falls_back_for_missing_or_ambiguous_evidence(self) -> None:
+        nougat = (RBC_FIXTURE_ROOT / "nougat_code.mmd").read_text(encoding="utf-8")
+        sidecar = json.loads((RBC_FIXTURE_ROOT / "docling_code.json").read_text(encoding="utf-8"))
+
+        retained, missing_report, warnings = pipeline.hybridize_code_blocks(nougat, None)
+        self.assertEqual(retained, nougat)
+        self.assertEqual(missing_report["fallback"], 1)
+        self.assertIn("unavailable", warnings[0])
+
+        ambiguous = nougat.split("```", 1)[0] + nougat
+        retained, report, _ = pipeline.hybridize_code_blocks(ambiguous, sidecar["groups"])
+        self.assertEqual(retained, ambiguous)
+        self.assertEqual(report["fallback"], 1)
+        self.assertIn("anchor", report["blocks"][0]["fallback_reason"])
+
+        flattened = json.loads(json.dumps(sidecar["groups"]))
+        flattened[0]["blocks"] = [
+            {"text": "var Y I K N A C", "provenance": [{"page": 10}]}
+        ]
+        retained, report, _ = pipeline.hybridize_code_blocks(nougat, flattened)
+        self.assertEqual(retained, nougat)
+        self.assertEqual(report["fallback"], 1)
+        self.assertIn("flattened", report["blocks"][0]["fallback_reason"])
+
+        skipped_page = json.loads(json.dumps(sidecar["groups"]))
+        skipped_page[0]["blocks"][1]["provenance"] = [{"page": 13}]
+        retained, report, _ = pipeline.hybridize_code_blocks(nougat, skipped_page)
+        self.assertEqual(retained, nougat)
+        self.assertEqual(report["fallback"], 1)
+        self.assertIn("consecutive pages", report["blocks"][0]["fallback_reason"])
 
     @unittest.skipUnless(shutil.which("pandoc"), "pandoc is not installed")
     def test_pandoc_caption_has_no_source_numbering_or_duplicate_text(self) -> None:
@@ -337,7 +425,13 @@ class PipelineTests(unittest.TestCase):
         pdf = self.root / "real-latex.pdf"
         pdf.write_bytes(b"%PDF-1.7\nreal-latex")
         self.env["FAKE_VALID_PNG"] = "1"
-        self.env["FAKE_NOUGAT_MARKDOWN"] = "# Test paper\n\nJosé presents a naïve estimate.\n"
+        self.env["FAKE_NOUGAT_MARKDOWN"] = (
+            "# Test paper\n\nJosé presents a naïve estimate.\n\n"
+            "```\n"
+            "1 var ∆;\n"
+            "2 % This long code comment remains inside the balanced listing despite reading like prose.\n"
+            "```\n"
+        )
         pandoc = shutil.which("pandoc") or "pandoc"
         latexmk = shutil.which("latexmk") or "latexmk"
 
@@ -346,20 +440,24 @@ class PipelineTests(unittest.TestCase):
             0,
         )
         job_dir = next((self.root / "outputs").iterdir())
+        generated_tex = (job_dir / "real-latex.tex").read_text(encoding="utf-8")
+        self.assertEqual(generated_tex.count(r"\begin{verbatim}"), 1)
+        self.assertIn("DeclareUnicodeCharacter{2206}", generated_tex)
+        self.assertIn("This long code comment remains inside", generated_tex)
         result = subprocess.run(
-            [latexmk, "-pdf", "-halt-on-error", "-file-line-error", "combined.tex"],
+            [latexmk, "-pdf", "-halt-on-error", "-file-line-error", "real-latex.tex"],
             cwd=job_dir,
             check=False,
             capture_output=True,
             text=True,
         )
-        log = (job_dir / "combined.log").read_text(encoding="utf-8", errors="replace")
+        log = (job_dir / "real-latex.log").read_text(encoding="utf-8", errors="replace")
         diagnostics = f"\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}\nLOG:\n{log}"
         self.assertEqual(result.returncode, 0, diagnostics)
         self.assertNotIn("! LaTeX Error", log)
         self.assertNotIn("not found", log.lower())
         self.assertNotIn("missing graphics", log.lower())
-        compiled_pdf = job_dir / "combined.pdf"
+        compiled_pdf = job_dir / "real-latex.pdf"
         self.assertTrue(compiled_pdf.is_file())
         try:
             import fitz  # type: ignore[import-not-found]
@@ -425,6 +523,8 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(validate_latex_input("José presents a naïve estimate.\n"))
         self.assertFalse(validate_latex_input("José, naïve; estimate: robust!\n"))
         self.assertFalse(validate_latex_input("Nougat math $x+y$ and figures/figure-001.png.\n"))
+        self.assertFalse(validate_latex_input("A code symbol ∆ is declared explicitly.\n"))
+        self.assertEqual(len(pdftex_header_includes("```\n1 var ∆;\n```\n")), 1)
 
     def test_footnote_orphan_continuation_survives_intervening_body_and_figure(self) -> None:
         nougat = (
@@ -513,7 +613,7 @@ class PipelineTests(unittest.TestCase):
         job_dir = next((self.root / "outputs").iterdir())
         docling = (job_dir / "docling.md").read_text(encoding="utf-8")
         decoded = (job_dir / "docling_decoded.md").read_text(encoding="utf-8")
-        combined = (job_dir / "combined.md").read_text(encoding="utf-8")
+        combined = (job_dir / "keep-base64.md").read_text(encoding="utf-8")
         self.assertIn("data:image/png;base64,", docling)
         self.assertIn("figures/figure-001.png", decoded)
         self.assertIn("figures/figure-001.png", combined)
@@ -603,7 +703,7 @@ class PipelineTests(unittest.TestCase):
         manifest = json.loads((job_dir / "manifest.json").read_text())
         self.assertEqual(manifest["stages"]["nougat"]["status"], "running")
         self.assertFalse((job_dir / "nougat.mmd").exists())
-        self.assertFalse((job_dir / "combined.md").exists())
+        self.assertFalse((job_dir / "stale.md").exists())
 
         self.env.pop("FAKE_FAIL_NOUGAT")
         self.assertEqual(self.run_pipeline(pdf, "--resume"), 0)
@@ -696,6 +796,48 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(prepared.count("```"), 2)
         self.assertTrue(prepared.endswith("```\n"))
 
+        balanced = (
+            "```\n"
+            "1 var y;\n"
+            "2 % This unusually long comment reads like prose but is still verbatim code.\n"
+            "```\n\nFollowing prose.\n"
+        )
+        self.assertEqual(fix_fences(balanced), balanced)
+
+    def test_missing_code_sidecar_merge_only_falls_back_and_resume_reruns_docling(self) -> None:
+        pdf = self.root / "legacy-sidecar.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nlegacy-sidecar")
+        self.env["FAKE_NOUGAT_MARKDOWN"] = "Before code anchors stay stable.\n\n```\n1 code\n```\n"
+        self.assertEqual(self.run_pipeline(pdf), 0)
+        job_dir = next((self.root / "outputs").iterdir())
+        (job_dir / "docling_code.json").unlink()
+
+        self.assertEqual(self.run_pipeline(pdf, "--merge-only"), 0)
+        report = json.loads((job_dir / "merge_report.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["code_blocks"]["source"], "unavailable")
+        self.assertEqual(report["code_blocks"]["fallback"], 1)
+        self.assertEqual((self.counter_dir / "nougat").read_text(), "1")
+        self.assertEqual((self.counter_dir / "docling").read_text(), "1")
+
+        self.assertEqual(self.run_pipeline(pdf, "--resume"), 0)
+        self.assertEqual((self.counter_dir / "nougat").read_text(), "1")
+        self.assertEqual((self.counter_dir / "docling").read_text(), "2")
+        self.assertTrue((job_dir / "docling_code.json").is_file())
+
+    def test_success_removes_only_legacy_pipeline_owned_combined_files(self) -> None:
+        pdf = self.root / "legacy-cleanup.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nlegacy-cleanup")
+        self.assertEqual(self.run_pipeline(pdf), 0)
+        job_dir = next((self.root / "outputs").iterdir())
+        for name in ("combined.md", "combined_for_tex.md", "combined.tex", "combined.pdf", "combined.aux"):
+            (job_dir / name).write_text("legacy", encoding="utf-8")
+
+        self.assertEqual(self.run_pipeline(pdf, "--merge-only"), 0)
+        for name in ("combined.md", "combined_for_tex.md", "combined.tex"):
+            self.assertFalse((job_dir / name).exists(), name)
+        for name in ("combined.pdf", "combined.aux"):
+            self.assertTrue((job_dir / name).exists(), name)
+
     def test_fast_and_quality_profiles_smoke_with_a_real_pdf_input(self) -> None:
         pdf = self.root / "smoke.pdf"
         pdf.write_bytes(
@@ -734,7 +876,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual((self.counter_dir / "docling").read_text(), "1")
         job_dir = next((self.root / "outputs").iterdir())
         merge_report = json.loads((job_dir / "merge_report.json").read_text())
-        self.assertEqual(merge_report["schema"], "4")
+        self.assertEqual(merge_report["schema"], "5")
         self.assertIn("ocr_audit", merge_report)
         self.assertTrue((job_dir / "ocr_audit.json").is_file())
         timings = json.loads((job_dir / "timings.json").read_text())

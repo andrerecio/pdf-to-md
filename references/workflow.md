@@ -7,7 +7,7 @@
    are not activated.
 3. Choose --profile fast or --profile quality.
 4. Run scripts/extract_pdf_to_md.py with --resume.
-5. Review combined.md, figures/, merge_report.json, manifest.json, timings.json,
+5. Review `<safe-stem>.md`, figures/, merge_report.json, manifest.json, timings.json,
    and ocr_audit.md/ocr_audit.json.
 6. Resolve every active OCR finding against only the named PDF page or bounding
    box. Repair nougat.mmd (or docling.md for an inserted caption/footnote) only
@@ -19,19 +19,24 @@ and adds each normalized Docling figure once under `## Figures`. Nougat is
 also the body source when `--figure-placement inline` is selected; inline
 placement only inserts figure blocks at monotonic Nougat paragraph anchors.
 Docling prose, tables, and formulas are never transplanted into the body.
+Uniquely aligned numbered code is the exception: Docling content is reflowed
+using Nougat's leading printed-number sequence, joined across consecutive
+pages, and emitted as one plain balanced fence. Ambiguous evidence stays Nougat.
 
 ## Repeat runs
 
 --resume reuses a stage only when its PDF hash, profile, arguments, tool path,
 and tool version match the manifest. If a stage is missing or stale, only that
-stage is rerun. --force invalidates both external stages.
+stage is rerun. A missing `docling_code.json` reruns only Docling. --force
+invalidates both external stages.
 
 Changing figure placement, math normalization, metadata, or LaTeX options does
 not require OCR reruns; rerun the merge command with --resume.
 
 When a job already has valid external stages, use the same PDF, profile, and
 output directory with `--merge-only` to rebuild Markdown, repair cached assets,
-and rerun the OCR audit without invoking either OCR tool. `--resume` performs
+and rerun the OCR audit without invoking either OCR tool. It retains Nougat
+code with a warning if `docling_code.json` is unavailable. `--resume` performs
 this merge-time normalization and audit as part of a normal run. Both paths
 rewrite local Docling image references to durable relative links and remove
 stale `.staging/` paths.
@@ -81,7 +86,8 @@ For example:
 - For LaTeX, use --to-latex. Pandoc runs from the hashed job directory with
   the job, `figures/`, and `docling_assets/` as resource paths. Preflight
   rejects unresolved assets, staging paths, formula placeholders, and raw
-  Unicode unsupported by the documented pdfLaTeX route. Compile from that
-  directory with:
+  Unicode unsupported by the documented pdfLaTeX route. Balanced code fences
+  become `verbatim`; intentional `∆` receives an explicit pdfLaTeX declaration.
+  Compile from that directory with:
 
-      latexmk -pdf -halt-on-error -file-line-error combined.tex
+      latexmk -pdf -halt-on-error -file-line-error <safe-stem>.tex

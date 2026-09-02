@@ -23,6 +23,16 @@ class OcrAuditTests(unittest.TestCase):
         tokens = audit.semantic_tokens(normalized, chars)
         return audit.PdfPage(number, text, chars, (100.0, 100.0), tokens, [])
 
+    def test_cli_default_merged_path_uses_safe_pdf_stem(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pdf = root / "RBC notes (2024).pdf"
+            pdf.write_bytes(b"synthetic pdf")
+            report = {"status": "clear", "execution": {"ok": True}}
+            with patch.object(audit, "run_audit", return_value=report) as run:
+                self.assertEqual(audit.main([str(pdf), str(root)]), 0)
+        self.assertEqual(run.call_args.args[3].name, "RBC_notes_2024.md")
+
     def test_normalization_unifies_ligatures_line_breaks_math_and_scripts(self) -> None:
         self.assertEqual(
             audit.normalize_text("ﬁnal co-\noperate σ_z⁻² α ≤ β − 1"),

@@ -24,12 +24,14 @@ from urllib.parse import unquote
 from check_deps import launcher_interpreter, package_version_from_command
 from parse_docling_figures import decode_docling_markdown, normalize_docling_markdown
 from prepare_md_for_latex import fix_fences, validate_latex_input
+from prepare_md_for_latex import pdftex_header_includes
 
 
 V2_VERSION = "2"
 # This changes merge/normalization behavior only.  It deliberately does not
 # participate in the expensive Nougat/Docling cache keys.
-MERGE_SCHEMA_VERSION = "4"
+MERGE_SCHEMA_VERSION = "5"
+DOCLING_CODE_SCHEMA_VERSION = "1"
 PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
     "fast": {
         "nougat_args": ["-m", "0.1.0-small", "--batchsize", "1"],
@@ -222,7 +224,7 @@ def run_docling(
 
     def run_once(mode: str, include_image_mode: bool = True) -> None:
         reset_directory(stage_dir)
-        command = [docling_cmd, *docling_args, "--to", "md"]
+        command = [docling_cmd, *docling_args, "--to", "md", "--to", "json"]
         if include_image_mode:
             command.extend(["--image-export-mode", mode])
         command.extend(["--output", str(stage_dir), str(pdf_path)])
@@ -242,6 +244,9 @@ def run_docling(
         output = find_single_output(stage_dir, ".md", pdf_path.stem)
         if output.stat().st_size == 0:
             raise RuntimeError("Docling produced an empty Markdown output.")
+        raw_json = find_single_output(stage_dir, ".json", pdf_path.stem)
+        if raw_json.stat().st_size == 0:
+            raise RuntimeError("Docling produced an empty JSON output.")
 
     actual_mode = image_mode
     try:
@@ -266,14 +271,128 @@ def run_docling(
             )
             run_once(actual_mode, include_image_mode=False)
     output = find_single_output(stage_dir, ".md", pdf_path.stem)
+    raw_json = find_single_output(stage_dir, ".json", pdf_path.stem)
 
     assets_dir = job_dir / "docling_assets"
     reset_directory(assets_dir)
     # Preserve only assets referenced by Markdown.  In particular, never let
     # absolute paths back into the cached output after .staging is removed.
     normalize_docling_markdown(output, figures_md, assets_dir, stage_dir)
+    write_docling_code_sidecar(raw_json, job_dir / "docling_code.json")
     cleanup_staging_dir(stage_dir)
     return figures_md, actual_mode
+
+
+def _docling_text_entries(document: dict[str, Any]) -> list[dict[str, Any]]:
+    texts = document.get("texts")
+    if not isinstance(texts, list):
+        return []
+    by_ref = {
+        item.get("self_ref"): item
+        for item in texts
+        if isinstance(item, dict) and isinstance(item.get("self_ref"), str)
+    }
+    body = document.get("body")
+    children = body.get("children") if isinstance(body, dict) else None
+    if not isinstance(children, list):
+        return [item for item in texts if isinstance(item, dict)]
+    ordered: list[dict[str, Any]] = []
+    for child in children:
+        reference = child.get("$ref") if isinstance(child, dict) else None
+        item = by_ref.get(reference)
+        if item is not None:
+            ordered.append(item)
+    return ordered
+
+
+def _code_provenance(item: dict[str, Any]) -> list[dict[str, Any]]:
+    provenance = item.get("prov")
+    if not isinstance(provenance, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for entry in provenance:
+        if not isinstance(entry, dict) or not isinstance(entry.get("page_no"), int):
+            continue
+        compact = {"page": entry["page_no"]}
+        bbox = entry.get("bbox")
+        if isinstance(bbox, dict):
+            compact["bbox"] = {
+                key: bbox[key]
+                for key in ("l", "t", "r", "b", "coord_origin")
+                if key in bbox
+            }
+        result.append(compact)
+    return result
+
+
+def extract_docling_code_groups(document: dict[str, Any]) -> list[dict[str, Any]]:
+    """Keep page-ordered code and its nearest body-text anchors."""
+
+    entries = _docling_text_entries(document)
+    furniture = {"page_header", "page_footer"}
+    groups: list[dict[str, Any]] = []
+    current: list[dict[str, Any]] = []
+    before_text = ""
+
+    def finish(after_text: str) -> None:
+        nonlocal current
+        if not current:
+            return
+        groups.append(
+            {
+                "order": len(groups),
+                "before_text": before_text,
+                "after_text": after_text,
+                "blocks": current,
+            }
+        )
+        current = []
+
+    for item in entries:
+        label = item.get("label")
+        text = item.get("orig") or item.get("text") or ""
+        if label == "code" and isinstance(text, str) and text.strip():
+            current.append(
+                {
+                    "text": text,
+                    "language": item.get("code_language") or "unknown",
+                    "provenance": _code_provenance(item),
+                }
+            )
+            continue
+        if label in furniture or not isinstance(text, str) or not text.strip():
+            continue
+        if current:
+            finish(text)
+        before_text = text
+    finish("")
+    return groups
+
+
+def write_docling_code_sidecar(source: Path, destination: Path) -> None:
+    try:
+        document = json.loads(source.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(f"Cannot read Docling JSON output: {exc}") from exc
+    if not isinstance(document, dict):
+        raise RuntimeError("Docling JSON output is not an object.")
+    write_json(
+        destination,
+        {
+            "schema": DOCLING_CODE_SCHEMA_VERSION,
+            "groups": extract_docling_code_groups(document),
+        },
+    )
+
+
+def load_docling_code_groups(path: Path) -> list[dict[str, Any]] | None:
+    sidecar = load_manifest(path)
+    if sidecar.get("schema") != DOCLING_CODE_SCHEMA_VERSION:
+        return None
+    groups = sidecar.get("groups")
+    if not isinstance(groups, list) or not all(isinstance(group, dict) for group in groups):
+        return None
+    return groups
 
 
 FORMULA_RE = re.compile(
@@ -1245,6 +1364,7 @@ def audit_report_summary(report: dict[str, Any]) -> dict[str, Any]:
 def run_ocr_audit(
     pdf_path: Path,
     job_dir: Path,
+    combined_md: Path,
     nougat_cmd: str | None,
     manifest: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1281,7 +1401,7 @@ def run_ocr_audit(
         "--docling-md",
         str(job_dir / "docling_decoded.md"),
         "--combined-md",
-        str(job_dir / "combined.md"),
+        str(combined_md),
     ]
     audit_stderr = False
     try:
@@ -1379,6 +1499,7 @@ def invalidate_stage_outputs(job_dir: Path, stage: str) -> None:
         staging_dir = job_dir / ".staging" / "nougat"
     elif stage == "docling":
         (job_dir / "docling.md").unlink(missing_ok=True)
+        (job_dir / "docling_code.json").unlink(missing_ok=True)
         assets_dir = job_dir / "docling_assets"
         if assets_dir.exists():
             shutil.rmtree(assets_dir)
@@ -1389,14 +1510,11 @@ def invalidate_stage_outputs(job_dir: Path, stage: str) -> None:
         cleanup_staging_dir(staging_dir)
 
     for path in (
-        job_dir / "combined.md",
         job_dir / "docling_decoded.md",
         job_dir / "merge_report.json",
         job_dir / "timings.json",
         job_dir / "ocr_audit.json",
         job_dir / "ocr_audit.md",
-        job_dir / "combined_for_tex.md",
-        job_dir / "combined.tex",
     ):
         path.unlink(missing_ok=True)
     figures_dir = job_dir / "figures"
@@ -1539,17 +1657,367 @@ def inline_figure_edits(nougat_text: str, docling_text: str, figures: list[Figur
     return edits, unplaced
 
 
+FENCE_LINE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>`{3,}|'{3})(?P<info>[^\n]*)$", re.MULTILINE)
+ANCHOR_WORD_RE = re.compile(r"[A-Za-z0-9]+")
+NUMBERED_CODE_START_RE = re.compile(r"^\s*(?P<number>\d+)(?=\s|$)")
+
+
+@dataclass(frozen=True)
+class ReflowedCode:
+    text: str
+    first_line: int | None
+    last_line: int | None
+
+
+def normalize_code_text(text: str) -> str:
+    """Normalize OCR lookalikes without transliterating intentional symbols."""
+
+    normalized = text.replace("ˆ", "^").replace("−", "-")
+    normalized = re.sub(
+        r"(?P<quote>['\"])\s+(?P<body>[^'\"\n]*?)\s+(?P=quote)",
+        lambda match: f"{match.group('quote')}{match.group('body')}{match.group('quote')}",
+        normalized,
+    )
+    return re.sub(r"\s+([),;])", r"\1", normalized).strip()
+
+
+def underscore_identifiers(text: str) -> list[str]:
+    identifiers = set(
+        re.findall(r"(?<![A-Za-z])[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b", text)
+    )
+    return sorted(identifiers, key=lambda value: (-len(value), value))
+
+
+def repair_underscores(text: str, identifiers: list[str]) -> str:
+    repaired = text
+    for identifier in identifiers:
+        components = identifier.split("_")
+        spaced = re.compile(r"\b" + r"\s+".join(re.escape(part) for part in components) + r"\b")
+        matches = list(spaced.finditer(repaired))
+        if len(matches) == 1:
+            repaired = spaced.sub(identifier, repaired, count=1)
+            continue
+        for left, right in zip(components, components[1:]):
+            words = set(re.findall(r"\b[A-Za-z][A-Za-z0-9]*\b", repaired))
+            suffixes = [left]
+            suffixes.extend(
+                word for word in words if len(word) >= 3 and left.endswith(word) and word != left
+            )
+            for suffix in sorted(suffixes, key=len, reverse=True):
+                pair = re.compile(
+                    rf"(?<![A-Za-z0-9]){re.escape(suffix)}\s+{re.escape(right)}(?![A-Za-z0-9])"
+                )
+                if len(list(pair.finditer(repaired))) == 1:
+                    repaired = pair.sub(f"{suffix}_{right}", repaired, count=1)
+                    break
+            else:
+                approximate = re.compile(
+                    rf"(?<![A-Za-z0-9])(?P<left>[A-Za-z][A-Za-z0-9]*)\s+"
+                    rf"{re.escape(right)}(?![A-Za-z0-9])"
+                )
+                candidates = [
+                    match
+                    for match in approximate.finditer(repaired)
+                    if len(left) >= 4
+                    and len(match.group("left")) >= 4
+                    and SequenceMatcher(None, left, match.group("left")).ratio() >= 0.8
+                ]
+                if len(candidates) == 1:
+                    match = candidates[0]
+                    replacement = f"{match.group('left')}_{right}"
+                    repaired = repaired[:match.start()] + replacement + repaired[match.end():]
+    return repaired
+
+
+def split_numbered_code_item(text: str) -> list[tuple[int, str]] | None:
+    first = NUMBERED_CODE_START_RE.match(text)
+    if first is None:
+        return None
+    markers: list[tuple[int, int, int]] = [
+        (int(first.group("number")), first.start("number"), first.end("number"))
+    ]
+    expected = markers[0][0] + 1
+    cursor = first.end("number")
+    while True:
+        marker = re.search(rf"(?<![\w.]){expected}(?=\s|$)", text[cursor:])
+        if marker is None:
+            break
+        start = cursor + marker.start()
+        end = cursor + marker.end()
+        markers.append((expected, start, end))
+        expected += 1
+        cursor = end
+    if len(markers) < 3:
+        return None
+
+    lines: list[tuple[int, str]] = []
+    for index, (number, _, marker_end) in enumerate(markers):
+        content_end = markers[index + 1][1] if index + 1 < len(markers) else len(text)
+        lines.append((number, text[marker_end:content_end].strip()))
+    return lines
+
+
+def leading_nougat_line_numbers(text: str) -> list[int]:
+    """Read the contiguous printed-number skeleton at a Nougat fence's start."""
+
+    numbers: list[int] = []
+    for line in text.splitlines():
+        if not line.strip() and not numbers:
+            continue
+        match = re.match(r"^\s*(?P<number>\d+)(?=\D|$)", line)
+        if match is None:
+            if numbers:
+                break
+            continue
+        number = int(match.group("number"))
+        if numbers and number != numbers[-1] + 1:
+            break
+        numbers.append(number)
+    return numbers
+
+
+def code_group_pages(group: dict[str, Any]) -> list[int]:
+    pages: set[int] = set()
+    blocks = group.get("blocks")
+    if not isinstance(blocks, list):
+        return []
+    for block in blocks:
+        provenance = block.get("provenance") if isinstance(block, dict) else None
+        if not isinstance(provenance, list):
+            continue
+        for entry in provenance:
+            page = entry.get("page") if isinstance(entry, dict) else None
+            if isinstance(page, int):
+                pages.add(page)
+    return sorted(pages)
+
+
+def reflow_docling_code_group(
+    group: dict[str, Any], nougat_context: str
+) -> tuple[ReflowedCode | None, str | None]:
+    blocks = group.get("blocks")
+    if not isinstance(blocks, list) or not blocks:
+        return None, "Docling code group has no blocks"
+    texts = [block.get("text") for block in blocks if isinstance(block, dict)]
+    if len(texts) != len(blocks) or not all(isinstance(text, str) and text.strip() for text in texts):
+        return None, "Docling code group contains an empty block"
+    pages = code_group_pages(group)
+    if any(current != previous + 1 for previous, current in zip(pages, pages[1:])):
+        return None, "Docling code blocks are not on consecutive pages"
+
+    numbered = [split_numbered_code_item(text) for text in texts]
+    identifiers = underscore_identifiers(nougat_context)
+    if all(lines is not None for lines in numbered):
+        flattened: list[tuple[int, str]] = []
+        for lines in numbered:
+            assert lines is not None
+            if flattened and lines[0][0] != flattened[-1][0] + 1:
+                return None, "numbered Docling blocks are not consecutive"
+            flattened.extend(lines)
+        nougat_numbers = leading_nougat_line_numbers(nougat_context)
+        docling_numbers = [number for number, _ in flattened]
+        if len(nougat_numbers) < 3 or docling_numbers[:len(nougat_numbers)] != nougat_numbers:
+            return None, "Nougat has no matching leading line-number sequence"
+        rendered: list[str] = []
+        for number, content in flattened:
+            normalized = repair_underscores(normalize_code_text(content), identifiers)
+            rendered.append(str(number) if not normalized else f"{number} {normalized}")
+        return ReflowedCode("\n".join(rendered), flattened[0][0], flattened[-1][0]), None
+
+    if any(lines is not None for lines in numbered):
+        return None, "Docling code group mixes numbered and unnumbered blocks"
+    if not all("\n" in text for text in texts):
+        return None, "unnumbered Docling code is flattened"
+    rendered_blocks = []
+    for text in texts:
+        lines = [repair_underscores(normalize_code_text(line), identifiers) for line in text.splitlines()]
+        rendered_blocks.append("\n".join(lines).strip())
+    return ReflowedCode("\n".join(rendered_blocks), None, None), None
+
+
+def _anchor_words(text: str) -> list[str]:
+    return [match.group(0).lower() for match in ANCHOR_WORD_RE.finditer(text)]
+
+
+def find_unique_anchor(
+    text: str,
+    anchor: str,
+    *,
+    start: int,
+    prefer_tail: bool,
+) -> tuple[int, int] | None:
+    anchor_words = _anchor_words(anchor)
+    if len(anchor_words) < 4:
+        return None
+    positions = [(match.start(), match.end()) for match in ANCHOR_WORD_RE.finditer(text, start)]
+    target_words = [text[left:right].lower() for left, right in positions]
+    max_width = min(12, len(anchor_words))
+    for width in range(max_width, 3, -1):
+        starts = range(len(anchor_words) - width, -1, -1) if prefer_tail else range(len(anchor_words) - width + 1)
+        for anchor_start in starts:
+            needle = anchor_words[anchor_start:anchor_start + width]
+            matches = [
+                index
+                for index in range(len(target_words) - width + 1)
+                if target_words[index:index + width] == needle
+            ]
+            if len(matches) == 1:
+                index = matches[0]
+                return positions[index][0], positions[index + width - 1][1]
+    return None
+
+
+def count_nougat_code_blocks(text: str) -> int:
+    markers = list(FENCE_LINE_RE.finditer(text))
+    return (len(markers) + 1) // 2
+
+
+def hybridize_code_blocks(
+    nougat_text: str,
+    code_groups: list[dict[str, Any]] | None,
+) -> tuple[str, dict[str, Any], list[str]]:
+    nougat_count = count_nougat_code_blocks(nougat_text)
+    report: dict[str, Any] = {
+        "source": "docling_code.json" if code_groups is not None else "unavailable",
+        "total": len(code_groups) if code_groups is not None else nougat_count,
+        "replaced": 0,
+        "fallback": 0,
+        "blocks": [],
+    }
+    warnings: list[str] = []
+    if code_groups is None:
+        report["fallback"] = nougat_count
+        if nougat_count:
+            reason = "docling_code.json is unavailable; retained Nougat code"
+            warnings.append(reason)
+            report["blocks"].append(
+                {
+                    "status": "fallback",
+                    "pages": [],
+                    "line_range": None,
+                    "replacement_count": 0,
+                    "fallback_reason": reason,
+                }
+            )
+        return nougat_text, report, warnings
+
+    edits: list[tuple[int, int, str]] = []
+    cursor = 0
+    for index, group in enumerate(code_groups, start=1):
+        pages = code_group_pages(group)
+        detail: dict[str, Any] = {"index": index, "pages": pages, "line_range": None}
+        before_text = group.get("before_text")
+        after_text = group.get("after_text")
+        before = (
+            find_unique_anchor(nougat_text, before_text, start=cursor, prefer_tail=True)
+            if isinstance(before_text, str) and before_text.strip()
+            else None
+        )
+        if before is None:
+            detail.update(
+                status="fallback",
+                replacement_count=0,
+                fallback_reason="preceding prose anchor is not unique",
+            )
+            report["fallback"] += 1
+            report["blocks"].append(detail)
+            warnings.append(f"Code block {index}: {detail['fallback_reason']}.")
+            continue
+        after = (
+            find_unique_anchor(nougat_text, after_text, start=before[1], prefer_tail=False)
+            if isinstance(after_text, str) and after_text.strip()
+            else None
+        )
+        if after is None:
+            detail.update(
+                status="fallback",
+                replacement_count=0,
+                fallback_reason="following prose anchor is not unique",
+            )
+            report["fallback"] += 1
+            report["blocks"].append(detail)
+            warnings.append(f"Code block {index}: {detail['fallback_reason']}.")
+            continue
+
+        markers = [
+            marker
+            for marker in FENCE_LINE_RE.finditer(nougat_text, before[1], after[0])
+        ]
+        if len(markers) not in {1, 2}:
+            detail.update(
+                status="fallback",
+                replacement_count=0,
+                fallback_reason="expected one fenced Nougat code region between anchors",
+            )
+            report["fallback"] += 1
+            report["blocks"].append(detail)
+            warnings.append(f"Code block {index}: {detail['fallback_reason']}.")
+            cursor = after[1]
+            continue
+        if len(markers) == 2 and (
+            markers[0].group("marker")[0] != markers[1].group("marker")[0]
+            or markers[1].group("info").strip()
+        ):
+            detail.update(
+                status="fallback",
+                replacement_count=0,
+                fallback_reason="Nougat fence delimiters are ambiguous",
+            )
+            report["fallback"] += 1
+            report["blocks"].append(detail)
+            warnings.append(f"Code block {index}: {detail['fallback_reason']}.")
+            cursor = after[1]
+            continue
+
+        region_end = markers[1].end() if len(markers) == 2 else after[0]
+        context = nougat_text[markers[0].end():region_end]
+        reflowed, reason = reflow_docling_code_group(group, context)
+        if reflowed is None:
+            detail.update(
+                status="fallback",
+                replacement_count=0,
+                fallback_reason=reason or "Docling code could not be reflowed",
+            )
+            report["fallback"] += 1
+            report["blocks"].append(detail)
+            warnings.append(f"Code block {index}: {detail['fallback_reason']}.")
+            cursor = after[1]
+            continue
+
+        marker = "```"
+        replacement = f"{marker}\n{reflowed.text}\n{marker}\n\n"
+        edits.append((markers[0].start(), region_end, replacement))
+        line_range = (
+            [reflowed.first_line, reflowed.last_line]
+            if reflowed.first_line is not None and reflowed.last_line is not None
+            else None
+        )
+        detail.update(
+            status="replaced",
+            line_range=line_range,
+            replacement_count=1,
+            fallback_reason=None,
+        )
+        report["replaced"] += 1
+        report["blocks"].append(detail)
+        cursor = after[1]
+
+    return apply_edits(nougat_text, edits), report, warnings
+
+
 def merge_outputs_with_report(
     nougat_text: str,
     figures_text: str,
     figure_placement: str,
     normalize_math: bool,
+    code_groups: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Merge Docling annotations into Nougat without replacing its body."""
+    """Merge Docling annotations and confident code into the Nougat body."""
 
     figures = extract_captioned_figures(figures_text)
-    combined_text, placed_footnotes, unplaced_footnotes = apply_footnotes(nougat_text, figures_text)
-    warnings: list[str] = []
+    code_text, code_report, code_warnings = hybridize_code_blocks(nougat_text, code_groups)
+    combined_text, placed_footnotes, unplaced_footnotes = apply_footnotes(code_text, figures_text)
+    warnings: list[str] = list(code_warnings)
     if figure_placement == "inline":
         edits, unplaced_figures = inline_figure_edits(combined_text, figures_text, figures)
         combined_text = apply_edits(combined_text, edits)
@@ -1587,6 +2055,7 @@ def merge_outputs_with_report(
     report = {
         "schema": MERGE_SCHEMA_VERSION,
         "figure_placement": figure_placement,
+        "code_blocks": code_report,
         "figures": {"total": len(figures), "placed": placed_figures, "unplaced": len(unplaced_figures)},
         "footnotes": {"placed": len(placed_footnotes), "unplaced": len(unplaced_footnotes)},
         "warnings": warnings,
@@ -1690,12 +2159,16 @@ def main() -> int:
 
     out_root = args.output_dir.expanduser().resolve()
     input_hash = sha256_file(pdf_path)
-    job_dir = out_root / f"{safe_stem(pdf_path)}-{input_hash[:12]}"
+    artifact_stem = safe_stem(pdf_path)
+    job_dir = out_root / f"{artifact_stem}-{input_hash[:12]}"
     job_dir.mkdir(parents=True, exist_ok=True)
 
     nougat_md = job_dir / "nougat.mmd"
     docling_md = job_dir / "docling.md"
-    combined_md = job_dir / "combined.md"
+    docling_code = job_dir / "docling_code.json"
+    combined_md = job_dir / f"{artifact_stem}.md"
+    combined_for_tex = job_dir / f"{artifact_stem}_for_tex.md"
+    combined_tex = job_dir / f"{artifact_stem}.tex"
     manifest_path = job_dir / "manifest.json"
     timings_path = job_dir / "timings.json"
     manifest = load_manifest(manifest_path)
@@ -1728,6 +2201,8 @@ def main() -> int:
         **cache_common,
         "docling_args": docling_args,
         "image_mode": args.image_mode,
+        "exports": ["md", "json"],
+        "code_sidecar_schema": DOCLING_CODE_SCHEMA_VERSION,
         "tool": tools.get("docling", {}),
     }
     cache_config = {"nougat": nougat_config, "docling": docling_config}
@@ -1744,7 +2219,7 @@ def main() -> int:
         manifest,
         "docling",
         docling_key,
-        [docling_md, docling_source_candidate],
+        [docling_md, docling_source_candidate, docling_code],
     ) and docling_assets_complete(docling_source_candidate)
     stage_timings: dict[str, dict[str, Any]] = {}
     actual_image_mode = args.image_mode
@@ -1778,6 +2253,12 @@ def main() -> int:
         }
         if args.force:
             nougat_cached = docling_cached = False
+
+        if not nougat_cached or not docling_cached:
+            # Do not leave a previously merged artifact looking current when
+            # either source stage is about to be replaced (or fails midway).
+            for path in (combined_md, combined_for_tex, combined_tex):
+                path.unlink(missing_ok=True)
 
         for stage, cached, cache_key in (
             ("nougat", nougat_cached, nougat_key),
@@ -1866,7 +2347,7 @@ def main() -> int:
                 "docling",
                 docling_key,
                 stage_timings["docling"]["seconds"],
-                [docling_md, docling_source],
+                [docling_md, docling_code],
                 image_mode=actual_image_mode,
             )
         manifest["updated_at"] = now_utc()
@@ -1889,11 +2370,13 @@ def main() -> int:
     merge_started = time.perf_counter()
     nougat_text = nougat_md.read_text(encoding="utf-8")
     figures_text = base_path.read_text(encoding="utf-8")
+    code_groups = load_docling_code_groups(docling_code)
     combined_text, merge_report = merge_outputs_with_report(
         nougat_text,
         figures_text,
         args.figure_placement,
         args.normalize_math,
+        code_groups,
     )
 
     metadata_block = build_yaml_metadata(args.title, args.author, args.date)
@@ -1938,7 +2421,7 @@ def main() -> int:
         print("Skipping OCR fidelity audit (--skip-ocr-audit).", file=sys.stderr)
     else:
         audit_started = time.perf_counter()
-        audit_report = run_ocr_audit(pdf_path, job_dir, nougat_cmd, manifest)
+        audit_report = run_ocr_audit(pdf_path, job_dir, combined_md, nougat_cmd, manifest)
         audit_duration = time.perf_counter() - audit_started
         merge_report["ocr_audit"] = audit_report_summary(audit_report)
     write_json(job_dir / "merge_report.json", merge_report)
@@ -1963,30 +2446,39 @@ def main() -> int:
     write_json(timings_path, timings)
 
     if args.to_latex:
-        combined_for_tex = job_dir / "combined_for_tex.md"
-        combined_tex = job_dir / "combined.tex"
         cleaned = fix_fences(combined_text)
         latex_input_errors = validate_latex_input(cleaned, job_dir)
         if latex_input_errors:
             raise RuntimeError("Cannot generate pdfLaTeX input: " + "; ".join(latex_input_errors))
         atomic_write_text(combined_for_tex, cleaned)
         pandoc_cmd = require_command("pandoc", args.pandoc_cmd)
+        pandoc_command = [
+            pandoc_cmd,
+            combined_for_tex.name,
+            "-s",
+            "--from",
+            "markdown+tex_math_dollars+tex_math_single_backslash",
+            f"--resource-path=.{os.pathsep}figures{os.pathsep}docling_assets",
+        ]
+        for declaration in pdftex_header_includes(cleaned):
+            pandoc_command.extend(["--variable", f"header-includes={declaration}"])
+        pandoc_command.extend(["-o", combined_tex.name])
         subprocess.run(
-            [
-                pandoc_cmd,
-                combined_for_tex.name,
-                "-s",
-                "--from",
-                "markdown+tex_math_dollars+tex_math_single_backslash",
-                f"--resource-path=.{os.pathsep}figures{os.pathsep}docling_assets",
-                "-o",
-                combined_tex.name,
-            ],
+            pandoc_command,
             check=True,
             cwd=job_dir,
         )
         latex_text = combined_tex.read_text(encoding="utf-8", errors="replace")
         combined_tex.write_text(postprocess_latex(latex_text), encoding="utf-8")
+    else:
+        combined_for_tex.unlink(missing_ok=True)
+        combined_tex.unlink(missing_ok=True)
+
+    active_outputs = {combined_md.resolve(), combined_for_tex.resolve(), combined_tex.resolve()}
+    for legacy_name in ("combined.md", "combined_for_tex.md", "combined.tex"):
+        legacy = job_dir / legacy_name
+        if legacy.resolve() not in active_outputs:
+            legacy.unlink(missing_ok=True)
     print(f"Wrote merged Markdown to {combined_md}")
     return 0
 

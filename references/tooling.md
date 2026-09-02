@@ -16,8 +16,10 @@ Nougat is invoked with a PDF, model/profile arguments, --markdown, and an
 output directory. The runner validates exactly one .mmd artifact and uses it
 as the canonical prose, heading, equation, and table body.
 
-Docling is invoked with Markdown output, an image export mode, and an output
-directory. Referenced image mode is preferred; embedded mode remains a fallback.
+Docling is invoked once with Markdown and JSON output, an image export mode,
+and an output directory. Code enrichment is deliberately not enabled. The JSON
+export is reduced to `docling_code.json` for conservative code alignment.
+Referenced image mode is preferred; embedded mode remains a fallback.
 Before its staging directory is removed, every local image is resolved and
 copied into durable `docling_assets/`; final links are relative and use the
 canonical `figures/figure-NNN.ext` form. Missing or outside-root assets are
@@ -27,9 +29,9 @@ Pandoc is optional and required only for --to-latex. It is run from the hashed
 job directory with the job directory, `figures/`, and `docling_assets/` as
 resource paths. The LaTeX preparation preflight rejects unresolved local
 assets, absolute or `.staging/` paths, formula placeholders, and raw Unicode
-unsupported by the documented pdfLaTeX route. Compile a successful output with
-`latexmk -pdf -halt-on-error -file-line-error combined.tex` from that job
-directory.
+unsupported by the documented pdfLaTeX route. It maps intentional `∆` explicitly
+and preserves balanced fences for Pandoc `verbatim` output. Compile with
+`latexmk -pdf -halt-on-error -file-line-error <safe-stem>.tex` from that job directory.
 
 ## Hardware
 

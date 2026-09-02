@@ -180,9 +180,10 @@ Windows PowerShell:
 Use --profile quality for Nougat's base model. Appended figures are the
 default. The first run downloads model artifacts; later runs with --resume
 reuse valid external-stage outputs when the PDF, profile, arguments, and tool
-versions match. Nougat remains the canonical source for prose, headings,
-equations, and tables in both placement modes; Docling contributes figure,
-caption, and footnote evidence.
+versions match. Nougat remains canonical for prose, headings, equations, and
+tables in both placement modes. Docling contributes figure, caption, footnote,
+and page-ordered code evidence; code is replaced only after a unique conservative
+alignment. Docling code enrichment is not enabled.
 
 ### Complete POSIX workflow template
 
@@ -197,6 +198,7 @@ set -eu
 # Project, input, and output paths.
 SKILL_DIR="/path/to/pdf-to-md"
 PDF_PATH="/path/to/document.pdf"
+PDF_STEM="document" # safe output stem printed by the extraction command
 OUTPUT_ROOT="/path/to/output-directory"
 
 # Executables from the provisioned environments.
@@ -238,10 +240,10 @@ cd "$JOB_DIR"
   -halt-on-error \
   -file-line-error \
   -interaction=nonstopmode \
-  combined.tex
+  "$PDF_STEM.tex"
 
-printf 'Markdown: %s\n' "$JOB_DIR/combined.md"
-printf 'PDF:      %s\n' "$JOB_DIR/combined.pdf"
+printf 'Markdown: %s\n' "$JOB_DIR/$PDF_STEM.md"
+printf 'PDF:      %s\n' "$JOB_DIR/$PDF_STEM.pdf"
 ```
 
 For routine conversions, change `--profile quality` to `--profile fast`.
@@ -272,18 +274,19 @@ The current output directory is:
     outputs/<pdf-stem>-<content-hash>/
       nougat.mmd
       docling.md
+      docling_code.json
       docling_assets/
       docling_decoded.md
       figures/
-      combined.md
+      <safe-stem>.md
       merge_report.json
       ocr_audit.json
       ocr_audit.md
       ocr_audit_review.json
       manifest.json
       timings.json                 # includes ocr_audit_seconds
-      combined_for_tex.md            optional
-      combined.tex                  optional
+      <safe-stem>_for_tex.md        optional
+      <safe-stem>.tex               optional
 
 ## Profiles and performance
 
@@ -297,9 +300,11 @@ Stages run serially by default to avoid competing for memory. Opt into
 parallel execution can be slower or fail on constrained machines. Use
 --resume for content-addressed stage reuse and --force to invalidate both
 external stages. A resume also normalizes cached Docling image links and
-repairs durable assets when possible. To repair or regenerate only merge
+repairs durable assets when possible. A missing `docling_code.json` reruns only
+Docling. To repair or regenerate only merge
 artifacts after OCR has completed, pass --merge-only with the same PDF,
---profile, and --output-dir; this does not invoke Nougat or Docling.
+--profile, and --output-dir; this does not invoke Nougat or Docling and retains
+Nougat code with a warning if the code sidecar is missing.
 
 Every normal and merge-only run audits the merged content after structural
 validation. The audit uses pypdfium2 from the Nougat environment, so the
@@ -325,21 +330,28 @@ Pass tool-specific settings without shell-quoted argument strings:
 
 ## Output contract
 
-nougat.mmd is the canonical body source. docling.md is normalized Docling
+nougat.mmd is canonical for prose, headings, equations, and tables. docling.md is normalized Docling
 Markdown with local assets copied into the sibling docling_assets/ directory;
 it is retained for inspection and cache repair, not used as the final prose
 body. docling_decoded.md is the merge input after images are copied or decoded
-into figures/. combined.md is the final artifact. Every local image reference
+into figures/. docling_code.json caches ordered code, anchors, and page
+provenance from the same non-enriched Docling run. `<safe-stem>.md` is the final artifact. Every local image reference
 in these Markdown artifacts is durable and relative: docling.md uses
-docling_assets/..., while docling_decoded.md and combined.md use
+docling_assets/..., while docling_decoded.md and `<safe-stem>.md` use
 figures/figure-001.png. Absolute paths and .staging/ references are invalid.
+
+A code fence is replaced only when its surrounding anchors and Nougat's
+leading printed line numbers uniquely align with Docling. Consecutive page
+items become one plain balanced fence. The merger repairs only unambiguous
+underscores, normalizes `ˆ` to `^` and `−` to `-`, and preserves `∆`.
 
 The default appended mode puts each figure once under ## Figures. Explicit
 inline mode anchors figures to Nougat paragraph boundaries using monotonic
 context. If an anchor is ambiguous or below the confidence threshold, that
 figure is placed once under ## Unplaced Figures and a warning is recorded.
 Footnote markers and definitions are reconstructed for both modes. Review
-merge_report.json (merge schema 4) for placed/unplaced figures, footnote
+merge_report.json (merge schema 5) for code-block status, page/line ranges,
+replacement/fallback counts and reasons, placed/unplaced figures, footnote
 status, structural validation errors, OCR-audit summary, and warnings.
 ocr_audit.json uses audit schema 1 and records per-page coverage, bounded
 prose/digit/math substitutions, contextual evidence, and limitations;
@@ -363,17 +375,19 @@ Run:
       --nougat-cmd "$NOUGAT_CMD" --docling-cmd "$DOCLING_CMD" \
       --resume --to-latex --pandoc-cmd "$PANDOC_CMD"
 
-The runner first prepares combined_for_tex.md, validates image paths and
-LaTeX-sensitive content, then writes and postprocesses combined.tex. Pandoc is
+The runner first prepares `<safe-stem>_for_tex.md`, validates image paths and
+LaTeX-sensitive content, then writes and postprocesses `<safe-stem>.tex`. Pandoc is
 run from the hashed job directory with that directory, figures/, and
 docling_assets/ available as resource paths. The preparation step fails before
 Pandoc when it finds an unresolved local asset, a .staging/ path, a formula
 placeholder, or raw Unicode unsupported by the documented pdfLaTeX route.
+Balanced fences are preserved as Pandoc `verbatim` blocks, and intentional `∆`
+is supported through an explicit pdfLaTeX declaration.
 
 To compile the generated file, change into the job directory and run:
 
     cd outputs/<pdf-stem>-<content-hash>
-    latexmk -pdf -halt-on-error -file-line-error combined.tex
+    latexmk -pdf -halt-on-error -file-line-error <safe-stem>.tex
 
 Treat missing-graphics or input-encoding errors as failures; ordinary
 overfull-box warnings can be reviewed separately.
@@ -407,7 +421,7 @@ be retained for another installation.
 | LaTeX reports missing graphics | Compile from the job directory with the command above and verify figures/ and docling_assets/ are present; unresolved local paths are a merge/preflight error. |
 
 Nougat is designed for academic documents and performs best on documents
-similar to its training data. Review combined.md, the figure directories,
+similar to its training data. Review `<safe-stem>.md`, the figure directories,
 merge_report.json, and ocr_audit.md after every conversion. A clear audit is
 limited to the reported coverage; scanned mathematics and poorly ordered
 tables can remain partial or unavailable.

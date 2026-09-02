@@ -1653,6 +1653,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def safe_stem(path: Path) -> str:
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", path.stem).strip("._")
+    return stem or "document"
+
+
 def build_resolve_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Record a human resolution for an OCR audit finding.")
     parser.add_argument("job_dir", nargs="?", type=Path)
@@ -1686,7 +1691,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_dir = output_dir.expanduser().resolve()
     nougat_path = (args.nougat_md or output_dir / "nougat.mmd").expanduser().resolve()
     docling_path = args.docling_md.expanduser().resolve() if args.docling_md else output_dir / "docling_decoded.md"
-    combined_path = (args.combined_md or output_dir / "combined.md").expanduser().resolve()
+    combined_path = (
+        args.combined_md or output_dir / f"{safe_stem(pdf_path)}.md"
+    ).expanduser().resolve()
     report = run_audit(pdf_path, nougat_path, docling_path, combined_path, output_dir, args.review_ledger)
     execution = report.get("execution", {})
     if isinstance(execution, dict) and not execution.get("ok", True):

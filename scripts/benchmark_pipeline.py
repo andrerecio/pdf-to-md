@@ -76,7 +76,9 @@ def main() -> int:
     pdf = args.pdf.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
     script = Path(__file__).with_name("extract_pdf_to_md.py")
-    job_dir = output_dir / f"{safe_stem(pdf)}-{sha256_file(pdf)[:12]}"
+    artifact_stem = safe_stem(pdf)
+    job_dir = output_dir / f"{artifact_stem}-{sha256_file(pdf)[:12]}"
+    merged_output = job_dir / f"{artifact_stem}.md"
     command = [
         sys.executable,
         str(script),
@@ -123,8 +125,8 @@ def main() -> int:
                 "wall_seconds": round(elapsed, 3),
                 "peak_children_mb": peak_children_mb(before_rss, after_rss),
                 "job_dir_bytes": directory_bytes(job_dir),
-                "output_bytes": (job_dir / "combined.md").stat().st_size,
-                "output_sha256": output_digest(job_dir / "combined.md"),
+                "output_bytes": merged_output.stat().st_size,
+                "output_sha256": output_digest(merged_output),
                 "stage_timings": timings.get("stages", {}),
                 "merge_seconds": timings.get("merge_seconds"),
                 "figure_decode_seconds": timings.get("figure_decode_seconds"),

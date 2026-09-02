@@ -10,8 +10,9 @@ After a conversion, benchmark the pure-Python merge stage:
     python3 scripts/benchmark_merge.py outputs/<stem>-<hash> --placement inline
 
 `appended` is the default production placement. Both modes use Nougat as the
-canonical prose, heading, equation, and table body; inline mode measures only
-the monotonic figure-anchor work and any append-with-warning fallback.
+canonical prose, heading, equation, and table body while allowing uniquely
+aligned Docling code replacement; inline mode additionally measures monotonic
+figure-anchor work and any append-with-warning fallback.
 
 To benchmark complete runs, use the external-tool harness. It records wall
 time, stage timings, merge time, figure-decoding time, OCR-audit time, output
@@ -64,5 +65,6 @@ Compare timings.json and the benchmark output for:
 - serial versus --parallel-stages execution.
 - cached `--resume`/`--merge-only` repair versus a full OCR run;
 - successful versus fallback inline figure placement and its warning count;
+- successful versus fallback hybrid code replacement and sidecar availability;
 - merge-report validation status and final figure asset count;
 - OCR-audit coverage, active findings, and `ocr_audit_seconds`.

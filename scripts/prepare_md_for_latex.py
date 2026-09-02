@@ -16,18 +16,30 @@ FORMULA_PLACEHOLDER_RE = re.compile(r"<!--\s*formula-(?:not-decoded|missing)\s*-
 # Unicode punctuation *category* would also admit scripts whose punctuation is
 # emitted raw and fails pdfLaTeX.
 PDFTEX_SAFE_WESTERN_PUNCTUATION = frozenset("“”‘’‚‛„‟«»‹›–—―…·  ")
+PDFTEX_UNICODE_DECLARATIONS = {
+    "∆": r"\ifPDFTeX\DeclareUnicodeCharacter{2206}{\ensuremath{\Delta}}\fi",
+}
+
+
+def pdftex_header_includes(text: str) -> list[str]:
+    return [
+        declaration
+        for char, declaration in PDFTEX_UNICODE_DECLARATIONS.items()
+        if char in text
+    ]
 
 
 def unsupported_pdftex_unicode(text: str) -> list[str]:
     """Find raw symbols that pdfLaTeX cannot safely infer from Markdown."""
 
-    # URLs and verbatim code are not prose/math input to pdfLaTeX in the same
-    # way, so avoid treating their escaped or internationalized content as a
-    # document glyph.
-    inspectable = re.sub(r"```.*?```|`[^`]*`|https?://\S+", "", text, flags=re.DOTALL)
+    # URL glyphs do not enter the document as ordinary text. Fenced and inline
+    # code do, so inspect them too and allow only explicitly declared symbols.
+    inspectable = re.sub(r"https?://\S+", "", text)
     unsupported: list[str] = []
     for char in inspectable:
         if ord(char) <= 127:
+            continue
+        if char in PDFTEX_UNICODE_DECLARATIONS:
             continue
         name = unicodedata.name(char, "")
         category = unicodedata.category(char)
@@ -100,27 +112,44 @@ def is_prose(line: str) -> bool:
 def fix_fences(text: str) -> str:
     lines = text.splitlines()
     out: list[str] = []
-    open_fence = False
-
-    for line in lines:
+    index = 0
+    while index < len(lines):
+        line = lines[index]
         stripped = line.strip()
         if stripped == "'''":
             stripped = "```"
             line = "```"
-
-        if stripped == "```":
-            open_fence = not open_fence
-            out.append("```")
+        opener = re.match(r"^(`{3,})(?:[^`]*)$", stripped)
+        if opener is None:
+            out.append(line)
+            index += 1
             continue
 
-        if open_fence and is_prose(line):
-            out.append("```")
-            open_fence = False
-
+        marker = opener.group(1)
+        closing = next(
+            (candidate for candidate in range(index + 1, len(lines)) if lines[candidate].strip() == marker),
+            None,
+        )
         out.append(line)
+        index += 1
+        if closing is not None:
+            out.extend(lines[index:closing + 1])
+            index = closing + 1
+            continue
 
-    if open_fence:
-        out.append("```")
+        while index < len(lines):
+            candidate = lines[index]
+            code_like = bool(
+                re.match(r"^\s*(?:\d+\s|[%#]|//|/\*|\*|--)", candidate)
+                or re.search(r"[;={}()]", candidate)
+            )
+            if is_prose(candidate) and not code_like:
+                out.append(marker)
+                break
+            out.append(candidate)
+            index += 1
+        else:
+            out.append(marker)
 
     return "\n".join(out) + "\n"
 
@@ -129,7 +158,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Prepare Markdown for Pandoc LaTeX conversion by fixing unclosed code fences."
     )
-    parser.add_argument("input_md", type=Path, help="Path to Markdown file (e.g., combined.md)")
+    parser.add_argument("input_md", type=Path, help="Path to a merged Markdown file")
     parser.add_argument("--output-md", type=Path, help="Path to write cleaned Markdown")
     args = parser.parse_args()
 

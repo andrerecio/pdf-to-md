@@ -52,6 +52,7 @@ text = Path(os.environ["FAKE_NOUGAT_TEXT"]).read_text(encoding="utf-8")
     else:
         source = r'''#!/usr/bin/env python3
 from pathlib import Path
+import json
 import os
 import sys
 
@@ -96,6 +97,11 @@ else:
     text = template.replace("{{FIGURE_1}}", image(1, "Production function"))
 
 (out / f"{pdf.stem}.md").write_text(text, encoding="utf-8")
+raw_json = {"texts": [], "body": {"children": []}}
+json_source = os.environ.get("FAKE_DOCLING_JSON")
+if json_source:
+    raw_json = json.loads(Path(json_source).read_text(encoding="utf-8"))
+(out / f"{pdf.stem}.json").write_text(json.dumps(raw_json), encoding="utf-8")
 '''
     path.write_text(source, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -202,6 +208,10 @@ class OutputContractTests(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         return jobs[0]
 
+    @staticmethod
+    def merged_path(job: Path, pdf: Path) -> Path:
+        return job / f"{pipeline.safe_stem(pdf)}.md"
+
     def test_absolute_staging_assets_are_durable_and_staging_is_removed(self) -> None:
         pdf = self.root / "synthetic RBC paper.pdf"
         pdf.write_bytes(b"%PDF-1.7 synthetic RBC")
@@ -210,17 +220,22 @@ class OutputContractTests(unittest.TestCase):
         job = self.job_dir()
         self.assertFalse((job / ".staging").exists())
         self.assertTrue((job / "docling_assets" / "assets" / "image-1.png").is_file())
+        self.assertTrue((job / "docling_code.json").is_file())
+        self.assertTrue((job / "synthetic_RBC_paper.md").is_file())
+        self.assertFalse((job / "combined.md").exists())
 
         docling = (job / "docling.md").read_text(encoding="utf-8")
-        for output in ("docling.md", "docling_decoded.md", "combined.md"):
-            text = (job / output).read_text(encoding="utf-8")
-            self.assertNotIn(".staging", text, output)
-            self.assertNotIn(str(self.root), text, output)
+        outputs = (job / "docling.md", job / "docling_decoded.md", self.merged_path(job, pdf))
+        for output in outputs:
+            text = output.read_text(encoding="utf-8")
+            self.assertNotIn(".staging", text, output.name)
+            self.assertNotIn(str(self.root), text, output.name)
         self.assertIn("docling_assets/assets/image-1.png", docling)
         self.assertTrue((job / "figures" / "figure-001.png").is_file())
 
         report = json.loads((job / "merge_report.json").read_text(encoding="utf-8"))
         self.assertIsInstance(report, dict)
+        self.assertEqual(report["schema"], "5")
 
     def test_resume_and_merge_only_repair_stale_absolute_cached_docling(self) -> None:
         pdf = self.root / "repair.pdf"
@@ -252,7 +267,7 @@ class OutputContractTests(unittest.TestCase):
         self.assertEqual(self.run_pipeline(pdf, "--merge-only"), 0)
         self.assertEqual((self.counter_dir / "nougat").read_text(), "1")
         self.assertEqual((self.counter_dir / "docling").read_text(), "1")
-        self.assertNotIn(".staging", (job / "combined.md").read_text(encoding="utf-8"))
+        self.assertNotIn(".staging", self.merged_path(job, pdf).read_text(encoding="utf-8"))
 
     def test_inline_uses_nougat_body_without_duplicate_structured_content(self) -> None:
         nougat = (FIXTURE_ROOT / "nougat.mmd").read_text(encoding="utf-8")
@@ -313,7 +328,7 @@ class OutputContractTests(unittest.TestCase):
             0,
         )
         job = self.job_dir()
-        combined = (job / "combined.md").read_text(encoding="utf-8")
+        combined = self.merged_path(job, pdf).read_text(encoding="utf-8")
         self.assertIn("Unplaced Figures", combined)
         report = json.loads((job / "merge_report.json").read_text(encoding="utf-8"))
         unplaced = report_path(report, ("figures", "unplaced"))
@@ -389,7 +404,8 @@ class OutputContractTests(unittest.TestCase):
         resource_text = " ".join(resource_args)
         self.assertIn("figures", resource_text)
         self.assertIn("docling_assets", resource_text)
-        self.assertTrue((job / "combined.tex").is_file())
+        self.assertTrue((job / "latex_for_tex.md").is_file())
+        self.assertTrue((job / "latex.tex").is_file())
 
 
 if __name__ == "__main__":

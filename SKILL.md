@@ -1,6 +1,6 @@
 ---
 name: pdf-to-md
-description: Extract structured Markdown from one research PDF using Nougat-OCR for text, math, and tables and Docling for figures, footnotes, and layout.
+description: Extract structured Markdown from one research PDF using Nougat-OCR for the document body and Docling for figures, footnotes, layout, and conservative code-block repair.
 ---
 
 # Pdf To Md
@@ -10,9 +10,10 @@ description: Extract structured Markdown from one research PDF using Nougat-OCR 
 Use this skill when a PDF must be converted to Markdown while preserving
 equations, tables, figure assets, and footnotes. The pipeline runs Nougat and
 Docling in isolated environments, then merges their outputs. Nougat is the
-canonical source for the final document body: prose, headings, equations, and
-tables come from Nougat for both figure-placement modes. Docling supplies
-figures, captions, and footnote/layout evidence to the merge step.
+canonical source for prose, headings, equations, and tables in the final body.
+Docling supplies figures, captions, footnote/layout evidence, and page-ordered
+code text. The merger replaces a Nougat code fence only when the surrounding
+anchors and printed line-number sequence identify one unique listing.
 
 ## Quick workflow
 
@@ -31,8 +32,8 @@ figures, captions, and footnote/layout evidence to the merge step.
    - fast uses Nougat small with conservative batch settings.
    - quality uses Nougat base for higher-quality academic extraction.
 5. Run extraction with --resume for stage-level caching.
-6. Review combined.md, figures/, merge_report.json, and the OCR-audit report in
-   the generated hashed job directory.
+6. Review `<safe-stem>.md`, `figures/`, `merge_report.json`, and the OCR-audit
+   report in the generated hashed job directory.
 
 Example:
 
@@ -63,16 +64,20 @@ Each PDF gets a directory named <safe-stem>-<content-hash> containing:
 
     nougat.mmd
     docling.md
+    docling_code.json
     docling_assets/
     docling_decoded.md
     figures/
-    combined.md
+    <safe-stem>.md
     merge_report.json
     ocr_audit.json
     ocr_audit.md
     ocr_audit_review.json
     manifest.json
     timings.json
+
+With `--to-latex`, the directory also contains `<safe-stem>_for_tex.md` and
+`<safe-stem>.tex`.
 
 Optional LaTeX output is created with --to-latex when Pandoc is installed.
 
@@ -89,15 +94,19 @@ Optional LaTeX output is created with --to-latex when Pandoc is installed.
   and completed stages.
 - Docling referenced image export is the default. The runner retries with
   embedded images when the installed Docling version cannot export references.
+- Docling exports Markdown and JSON in the same invocation. The runner derives
+  `docling_code.json` from the JSON without code enrichment. Confidently
+  aligned numbered listings are reflowed into plain balanced fences across
+  consecutive pages; ambiguous or flattened evidence remains Nougat text.
 - Every local figure is copied into the job. Normalized Docling Markdown uses
   durable relative links under `docling_assets/`; decoded and final Markdown
   uses canonical links such as `figures/figure-001.png`. No final Markdown may
   contain absolute paths or `.staging/` paths. `docling_assets/` retains the
   normalized Docling assets for cache reuse.
 - `--resume` repairs and re-normalizes valid cached Docling output before
-  merging. `--merge-only` performs the same merge/asset repair from an existing
-  hashed job without invoking Nougat or Docling, so a long OCR run need not be
-  repeated.
+  merging. A legacy cached job without `docling_code.json` reruns Docling only.
+  `--merge-only` never invokes Docling; when that sidecar is unavailable it
+  retains Nougat code and records a warning.
 - A post-extraction OCR fidelity audit runs after structural validation by
   default. It uses the PDF text layer and character boxes plus cached Docling
   caption/footnote evidence; it never edits content or starts another OCR
@@ -107,10 +116,10 @@ Optional LaTeX output is created with --to-latex when Pandoc is installed.
   coverage limitations. `ocr_audit.md` is the concise review view, and
   `ocr_audit_review.json` preserves human classifications across merge-only
   reruns.
-- `merge_report.json` (merge schema 4) records figure placement, fallback
-  warnings, footnote reconstruction, structural asset/Markdown validation,
-  and an OCR-audit summary. Structural `validation.ok` remains independent of
-  audit findings, which are nonfatal.
+- `merge_report.json` (merge schema 5) records per-code-block status, page and
+  line ranges, replacement counts and fallback reasons, plus figure placement,
+  footnote reconstruction, structural validation, and an OCR-audit summary.
+  Structural `validation.ok` remains independent of nonfatal audit findings.
 - Review every active audit finding against the indicated PDF page or bounding
   box. If the PDF disagrees, repair the source artifact—normally `nougat.mmd`,
   or `docling.md` for an inserted caption/footnote. If it agrees, classify it
@@ -122,8 +131,10 @@ Optional LaTeX output is created with --to-latex when Pandoc is installed.
   `unavailable` coverage limitations.
 - Before LaTeX output is written, the runner checks for unresolved local assets,
   staging paths, formula placeholders, and unsupported raw Unicode for the
-  documented pdfLaTeX route. Pandoc is run with the job directory and its
-  `figures/` and `docling_assets/` directories as resource paths.
+  documented pdfLaTeX route, including code blocks. Intentional `∆` is covered
+  by an explicit pdfLaTeX declaration. Pandoc is run with the job directory and
+  its `figures/` and `docling_assets/` directories as resource paths; preserved
+  fences become genuine `verbatim` environments.
 - --nougat-arg and --docling-arg are repeatable and avoid shell-specific
   argument quoting.
 
