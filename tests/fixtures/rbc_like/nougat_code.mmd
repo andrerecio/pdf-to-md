@@ -1,37 +1,19 @@
-## 4 How Well Can the Model Fit the Data?
+## 4 Quantitative fit of a baseline RBC model
 
-Now I have values of \(\alpha\), \(\beta\), \(\delta\), \(\theta\), \(\rho_{A}\), and \(s_{A}\). I can solve the model. I compute HP-filtered moments, exactly as I did in the data. My Dynare code is:
+A synthetic quarterly RBC model is calibrated from long-run averages. The Dynare listing for that baseline economy follows.
 
 ```
-1varYIKNACwRkrlogClogYlogIlogKlogNlogwlogAalp;
+1 var y i k n a c w rk r;
 2
-3varexoEA;
+3 varexo e_a;
 4
-5parametersbetaalphaalphaAAsnsksthetaysiscsws;
+5 parameters beta alpha delta rho_a;
 6
-7loadparam_rbc_moments;
-8set_param_value('alpha',alpha);
-9set_param_value('beta',beta);
-10set_param_value('a',A);
-11set_param_value('rhoA',rhoA);
-12set_param_value('sa',SA);
-13set_param_value('ns',ns);
-14set_param_value('ks',ks);
-15set_param_value('theta',theta);
-16set_param_value('ys',ys);
-17set_param_value('is',is);
-18set_param_value('cs',cs);
-19set_param_value('ws',ws);
-20
-21model;
-22
-23%(1)Euler equation bonds
-24(1/C)=beta*(1/(C(+1)))*(Rk(+1)+(1-\Delta));
-* (2) Labor supply theta/(1-N) = (1/C)*w;
-* (3) Labor demand w = (1-alpha)*A*K(-1)^(alpha)*N^(-alpha);
-* (4) Capital demand Rk = alpha*A*K(-1)^(alpha-1)*N^(1-alpha);
-* [19] stock_simul(order=1,irf=20,nograph,ar=4,hp_filter=1600);
+7 load baseline_rbc_params;
+8 set_param_value('alpha',alpha);
+9 set_param_value('beta',beta);
+10 steady;
+* stock_simul(order=1,irf=20,nograph,ar=4,hp_filter=1600);
+```
 
-I produce moments from the Dynare file (I do not worry about the lead and lag correlations with output, though. I do not have moments for the price level (because there is no nominal price level in the model). These are shown in the table below:
-
-The basic idea here is to qualitatively assess the model fit. This prose must remain outside the listing.
+The listing above is fixture code for the merger. This prose must remain outside the listing.

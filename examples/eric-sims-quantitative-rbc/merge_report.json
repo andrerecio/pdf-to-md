@@ -1,0 +1,57 @@
+{
+  "code_blocks": {
+    "blocks": [
+      {
+        "fallback_reason": null,
+        "index": 1,
+        "line_range": [
+          1,
+          89
+        ],
+        "pages": [
+          10,
+          11,
+          12
+        ],
+        "replacement_count": 1,
+        "status": "replaced"
+      }
+    ],
+    "fallback": 0,
+    "replaced": 1,
+    "source": "docling_code.json",
+    "total": 1
+  },
+  "figure_placement": "appended",
+  "figures": {
+    "placed": 5,
+    "total": 5,
+    "unplaced": 0
+  },
+  "footnotes": {
+    "placed": 1,
+    "unplaced": 0
+  },
+  "ocr_audit": {
+    "active_findings": 0,
+    "coverage": {
+      "full": 16,
+      "partial": 3,
+      "unavailable": 0
+    },
+    "detected_findings": 0,
+    "execution_ok": true,
+    "status": "clear",
+    "suppressed_findings": 0
+  },
+  "schema": "5",
+  "validation": {
+    "artifacts": {
+      "docling.md": [],
+      "docling_decoded.md": [],
+      "notes_rbc_quant_sp2024.md": []
+    },
+    "ok": true
+  },
+  "warnings": []
+}

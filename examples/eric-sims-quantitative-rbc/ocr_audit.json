@@ -1,0 +1,66 @@
+{
+  "coverage": {
+    "1": "full",
+    "10": "partial",
+    "11": "partial",
+    "12": "partial",
+    "13": "full",
+    "14": "full",
+    "15": "full",
+    "16": "full",
+    "17": "full",
+    "18": "full",
+    "19": "full",
+    "2": "full",
+    "3": "full",
+    "4": "full",
+    "5": "full",
+    "6": "full",
+    "7": "full",
+    "8": "full",
+    "9": "full"
+  },
+  "coverage_by_page": {
+    "1": "full",
+    "10": "partial",
+    "11": "partial",
+    "12": "partial",
+    "13": "full",
+    "14": "full",
+    "15": "full",
+    "16": "full",
+    "17": "full",
+    "18": "full",
+    "19": "full",
+    "2": "full",
+    "3": "full",
+    "4": "full",
+    "5": "full",
+    "6": "full",
+    "7": "full",
+    "8": "full",
+    "9": "full"
+  },
+  "coverage_summary": {
+    "full": 16,
+    "partial": 3,
+    "unavailable": 0
+  },
+  "execution": {
+    "engine": "pypdfium2",
+    "ok": true
+  },
+  "findings": [],
+  "limitations": [
+    "Code-heavy pages were not compared as prose/math: 10, 11, 12."
+  ],
+  "pdf_pages": 19,
+  "pdf_sha256": "b1dcee924317f4ac6643012ae4a29e446dfb280fe1792d8698799ceb7a916d08",
+  "schema": "1",
+  "status": "clear",
+  "summary": {
+    "active_findings": 0,
+    "detected_findings": 0,
+    "suppressed_findings": 0
+  }
+}

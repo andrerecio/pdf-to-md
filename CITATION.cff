@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it as below.
+title: pdf-to-md
+abstract: >-
+  Convert a research PDF into structured Markdown with Nougat-OCR for prose,
+  equations, and tables, and Docling for figures and conservative code repair.
+authors:
+  - family-names: Cantore
+    given-names: Cristiano
+    orcid: "https://orcid.org/0000-0002-4837-2140"
+    affiliation: Sapienza University of Rome
+repository-code: "https://github.com/ccantore/pdf-to-md"
+url: "https://github.com/ccantore/pdf-to-md"
+license: MIT
+version: 0.1.0
+date-released: "2026-10-14"
+keywords:
+  - pdf
+  - markdown
+  - ocr
+  - nougat
+  - docling

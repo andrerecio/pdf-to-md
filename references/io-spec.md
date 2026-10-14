@@ -61,9 +61,11 @@ The LaTeX files are optional and appear only when --to-latex is used.
   same finding fingerprint; a changed PDF or relevant extracted content makes
   the finding active again. Use `scripts/audit_ocr.py resolve` to record a
   classification.
-- `manifest.json` records the input hash, profile, external-stage arguments,
-  tool versions, runtime, and completed stages. External OCR cache keys are
-  independent of merge/normalization settings.
+- `manifest.json` records the PDF basename and hash, profile, external-stage
+  arguments, tool executable names and versions, runtime, and completed stages.
+  Absolute input and tool paths stay in memory for the running process and are
+  not written. External OCR cache keys are independent of merge/normalization
+  settings.
 - `timings.json` records external-stage, merge, image-decoding, and
   `ocr_audit_seconds` timings. Audit time does not participate in external
   cache keys.

@@ -1,5 +1,7 @@
 # pdf-to-md
 
+[![Tests](https://github.com/ccantore/pdf-to-md/actions/workflows/test.yml/badge.svg)](https://github.com/ccantore/pdf-to-md/actions/workflows/test.yml)
+
 Convert a research PDF into structured Markdown using **Nougat-OCR** for prose, equations, and tables, plus **Docling** for figures, captions, footnotes, and conservative code-block repair. The final Markdown is named after the uploaded PDF and uses copied/relinked figure assets.
 
 - **Nougat** is the canonical source for prose, headings, equations, and tables.
@@ -18,8 +20,11 @@ Convert a research PDF into structured Markdown using **Nougat-OCR** for prose, 
 - [Output structure](#output-structure)
 - [Profiles](#profiles)
 - [LaTeX output](#latex-output)
+- [Example](#example)
+- [Tests](#tests)
 - [Troubleshooting](#troubleshooting)
 - [Repository layout](#repository-layout)
+- [License](#license)
 
 ## Use as an AI skill
 
@@ -119,7 +124,7 @@ outputs/<pdf-stem>-<content-hash>/
   ocr_audit.json          # machine-readable fidelity findings (audit schema 1)
   ocr_audit.md            # concise human review report
   ocr_audit_review.json   # persistent finding-resolution ledger
-  manifest.json           # PDF hash, profile, args, tool/runtime versions
+  manifest.json           # PDF basename and hash, profile, args, tool executable names, runtime
   timings.json            # stage/merge/decode/audit timings
   <safe-stem>_for_tex.md   # optional, with --to-latex
   <safe-stem>.tex          # optional, with --to-latex
@@ -158,6 +163,24 @@ cd outputs/<pdf-stem>-<content-hash>
 latexmk -pdf -halt-on-error -file-line-error <safe-stem>.tex
 ```
 
+## Example
+
+[Eric Sims, “Business Cycle Facts and the Quantitative Performance of the RBC Model”](examples/eric-sims-quantitative-rbc/README.md) is a demonstration conversion of his Spring 2024 Notre Dame notes. The PDF is not in this repository. The example README links to the public copy and records its SHA-256. The original copyright is unchanged.
+
+![One PDF page beside the rendered Markdown](examples/eric-sims-quantitative-rbc/preview.png)
+
+GitHub renders the dollar-delimited equations in the merged notes. Tables leave Nougat as LaTeX `tabular` environments, which GitHub shows as source. The example README notes that.
+
+## Tests
+
+The unit tests fake Nougat and Docling, so they do not download models or use a GPU:
+
+```bash
+python -m unittest discover -s tests
+```
+
+Pandoc-dependent tests skip when Pandoc is not installed. The suite is `tests/test_pipeline.py`, `tests/test_output_contract.py`, and `tests/test_ocr_audit.py`.
+
 ## Troubleshooting
 
 | Symptom | Action |
@@ -174,11 +197,12 @@ See [INSTALL.md](INSTALL.md#troubleshooting) for the complete table.
 ## Repository layout
 
 ```
-scripts/    extract_pdf_to_md.py, audit_ocr.py, check_deps.py, bootstrap_runtime.py, benchmarks, etc.
+scripts/       extract_pdf_to_md.py, audit_ocr.py, check_deps.py, bootstrap_runtime.py, benchmark_merge.py, benchmark_pipeline.py
 requirements/  pinned deps for the nougat/ and docling/ isolated environments
-references/  workflow.md, io-spec.md, tooling.md (deep-dive docs referenced by SKILL.md)
-tests/      test_pipeline.py, test_output_contract.py
-benchmarks/  benchmark scripts and fixtures
+references/    workflow.md, io-spec.md, tooling.md (deep-dive docs referenced by SKILL.md)
+tests/         test_pipeline.py, test_output_contract.py, test_ocr_audit.py
+benchmarks/    documentation for the benchmark commands (no fixtures)
+examples/      demonstration conversion
 ```
 
 ## Documentation
@@ -186,3 +210,14 @@ benchmarks/  benchmark scripts and fixtures
 - [SKILL.md](SKILL.md) — AI-skill definition and quick workflow.
 - [INSTALL.md](INSTALL.md) — full installation, portability, and troubleshooting guide.
 - `references/workflow.md`, `references/io-spec.md`, `references/tooling.md` — deeper technical references.
+
+## License
+
+The software in this repository is [MIT](LICENSE), copyright Cristiano Cantore, 2026.
+
+Third-party tools are licensed separately:
+
+- Nougat's code is MIT. The `facebook/nougat-small` and `facebook/nougat-base` **model weights are [CC-BY-NC-4.0](https://creativecommons.org/licenses/by-nc/4.0/)**, so commercial use of those weights is restricted.
+- Docling is MIT.
+
+The worked example under `examples/eric-sims-quantitative-rbc/` is a demonstration conversion. Eric Sims retains copyright in the original notes.
