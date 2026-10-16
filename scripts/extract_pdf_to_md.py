@@ -71,6 +71,21 @@ def require_command(cmd: str, override: str | None) -> str:
     return resolved
 
 
+def resolve_command_path(command: str) -> Path | None:
+    """Resolve a command without treating a bare name as a relative path."""
+
+    raw = command.strip()
+    if not raw:
+        return None
+    expanded = Path(raw).expanduser()
+    if expanded.is_absolute() or raw.startswith("~") or any(separator in raw for separator in ("/", "\\")):
+        return expanded if executable_file(expanded) else None
+    found = find_command(raw)
+    if found is None:
+        return None
+    return Path(found)
+
+
 def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -150,6 +165,69 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def _executable_name(command: str) -> str:
+    return Path(command).name or command
+
+
+def _scrub_command_field(record: Any) -> None:
+    if isinstance(record, dict) and isinstance(record.get("command"), str) and record["command"].strip():
+        record["command"] = _executable_name(record["command"])
+
+
+def persisted_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Copy a manifest for disk. Absolute paths stay in the in-memory object."""
+
+    cleaned: dict[str, Any] = json.loads(json.dumps(manifest))
+    input_record = cleaned.get("input")
+    if isinstance(input_record, dict) and isinstance(input_record.get("path"), str) and input_record["path"].strip():
+        input_record["path"] = Path(input_record["path"]).name
+    tools = cleaned.get("tools")
+    if isinstance(tools, dict):
+        for tool in tools.values():
+            _scrub_command_field(tool)
+    config = cleaned.get("config")
+    if isinstance(config, dict):
+        for stage in config.values():
+            if isinstance(stage, dict):
+                _scrub_command_field(stage.get("tool"))
+    runtime = cleaned.get("runtime")
+    if isinstance(runtime, dict) and isinstance(runtime.get("python"), str) and runtime["python"].strip():
+        runtime["python"] = Path(runtime["python"]).name
+    return cleaned
+
+
+def write_manifest(path: Path, manifest: dict[str, Any]) -> None:
+    write_json(path, persisted_manifest(manifest))
+
+
+def scrub_report_files(job_dir: Path, output_root: Path, pdf_path: Path) -> None:
+    """Drop absolute job and input paths from reports if a tool echoed them."""
+
+    replacements = [
+        (str(job_dir.resolve()), job_dir.name),
+        (str(output_root.resolve()), output_root.name),
+        (str(pdf_path.resolve()), pdf_path.name),
+    ]
+    replacements = [(old, new) for old, new in replacements if old and old != new]
+    replacements.sort(key=lambda item: len(item[0]), reverse=True)
+    for name in (
+        "merge_report.json",
+        "ocr_audit.json",
+        "ocr_audit.md",
+        "ocr_audit_review.json",
+        "timings.json",
+    ):
+        path = job_dir / name
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        redacted = text
+        for old, new in replacements:
+            redacted = redacted.replace(old, new)
+        if redacted != text:
+            atomic_write_text(path, redacted)
 
 
 def command_version(command: str, package: str) -> str:
@@ -1279,7 +1357,11 @@ def audit_interpreter_has_pdfium(interpreter: str) -> bool:
 
 
 def find_audit_interpreter(nougat_cmd: str | None, manifest: dict[str, Any]) -> str | None:
-    """Reuse the Nougat environment's Python for pypdfium2-backed auditing."""
+    """Reuse the Nougat environment's Python for pypdfium2-backed auditing.
+
+    The manifest stores an executable name. Resume and merge-only audits resolve
+    that name from ``--nougat-cmd`` or ``PATH`` rather than a saved absolute path.
+    """
 
     commands: list[str] = []
     if nougat_cmd:
@@ -1290,7 +1372,9 @@ def find_audit_interpreter(nougat_cmd: str | None, manifest: dict[str, Any]) -> 
 
     candidates: list[str] = []
     for command in commands:
-        command_path = Path(command).expanduser()
+        command_path = resolve_command_path(command)
+        if command_path is None:
+            continue
         interpreter = launcher_interpreter(str(command_path))
         if interpreter:
             candidates.append(interpreter)
@@ -2178,14 +2262,20 @@ def main() -> int:
 
     nougat_cmd = None
     docling_cmd = None
+    audit_nougat_cmd: str | None = None
     tools: dict[str, dict[str, str]] = {}
     if not args.merge_only:
         nougat_cmd = require_command("nougat", args.nougat_cmd)
         docling_cmd = require_command("docling", args.docling_cmd)
+        audit_nougat_cmd = nougat_cmd
         tools = {
             "nougat": {"command": nougat_cmd, "version": command_version(nougat_cmd, "nougat-ocr")},
             "docling": {"command": docling_cmd, "version": command_version(docling_cmd, "docling")},
         }
+    elif args.nougat_cmd:
+        resolved_nougat = resolve_command_path(args.nougat_cmd)
+        if resolved_nougat is not None:
+            audit_nougat_cmd = str(resolved_nougat)
 
     cache_common = {
         "schema": V2_VERSION,
@@ -2267,7 +2357,7 @@ def main() -> int:
             if not cached:
                 invalidate_stage_outputs(job_dir, stage)
                 stage_pending(manifest, stage, cache_key)
-        write_json(manifest_path, manifest)
+        write_manifest(manifest_path, manifest)
 
         def run_stage(name: str, callback: Any) -> Any:
             started = time.perf_counter()
@@ -2351,7 +2441,7 @@ def main() -> int:
                 image_mode=actual_image_mode,
             )
         manifest["updated_at"] = now_utc()
-        write_json(manifest_path, manifest)
+        write_manifest(manifest_path, manifest)
     if args.merge_only:
         actual_image_mode = manifest_stage(manifest, "docling").get(
             "image_mode", args.image_mode
@@ -2398,6 +2488,7 @@ def main() -> int:
     }
     write_json(job_dir / "merge_report.json", merge_report)
     if not merge_report["validation"]["ok"]:
+        scrub_report_files(job_dir, out_root, pdf_path)
         details = "; ".join(
             f"{name}: {', '.join(errors)}" for name, errors in validation_errors.items() if errors
         )
@@ -2421,13 +2512,13 @@ def main() -> int:
         print("Skipping OCR fidelity audit (--skip-ocr-audit).", file=sys.stderr)
     else:
         audit_started = time.perf_counter()
-        audit_report = run_ocr_audit(pdf_path, job_dir, combined_md, nougat_cmd, manifest)
+        audit_report = run_ocr_audit(pdf_path, job_dir, combined_md, audit_nougat_cmd, manifest)
         audit_duration = time.perf_counter() - audit_started
         merge_report["ocr_audit"] = audit_report_summary(audit_report)
     write_json(job_dir / "merge_report.json", merge_report)
     manifest["merge_schema"] = MERGE_SCHEMA_VERSION
     manifest["updated_at"] = now_utc()
-    write_json(manifest_path, manifest)
+    write_manifest(manifest_path, manifest)
 
     timings = load_manifest(timings_path)
     if not isinstance(timings, dict):
@@ -2479,6 +2570,7 @@ def main() -> int:
         legacy = job_dir / legacy_name
         if legacy.resolve() not in active_outputs:
             legacy.unlink(missing_ok=True)
+    scrub_report_files(job_dir, out_root, pdf_path)
     print(f"Wrote merged Markdown to {combined_md}")
     return 0
 

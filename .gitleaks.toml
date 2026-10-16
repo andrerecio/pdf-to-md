@@ -1,0 +1,9 @@
+title = "pdf-to-md"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Stage cache keys are SHA-256 digests of pipeline config, not credentials."
+regexTarget = "line"
+regexes = ['''"cache_key": "[a-f0-9]{64}"''']

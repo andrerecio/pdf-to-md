@@ -1,0 +1,84 @@
+{
+  "config": {
+    "docling": {
+      "code_sidecar_schema": "1",
+      "docling_args": [
+        "--page-batch-size",
+        "4",
+        "--num-threads",
+        "4"
+      ],
+      "exports": [
+        "md",
+        "json"
+      ],
+      "image_mode": "referenced",
+      "input_sha256": "b1dcee924317f4ac6643012ae4a29e446dfb280fe1792d8698799ceb7a916d08",
+      "profile": "quality",
+      "schema": "2",
+      "tool": {
+        "command": "docling",
+        "version": "2.71.0"
+      }
+    },
+    "nougat": {
+      "input_sha256": "b1dcee924317f4ac6643012ae4a29e446dfb280fe1792d8698799ceb7a916d08",
+      "nougat_args": [
+        "-m",
+        "0.1.0-base"
+      ],
+      "profile": "quality",
+      "schema": "2",
+      "tool": {
+        "command": "nougat",
+        "version": "0.1.17"
+      }
+    }
+  },
+  "input": {
+    "path": "notes_rbc_quant_sp2024.pdf",
+    "sha256": "b1dcee924317f4ac6643012ae4a29e446dfb280fe1792d8698799ceb7a916d08"
+  },
+  "merge_schema": "5",
+  "profile": "quality",
+  "runtime": {
+    "machine": "x86_64",
+    "platform": "macOS-26.6.2-x86_64-i386-64bit-Mach-O",
+    "python": "python",
+    "python_version": "3.13.3"
+  },
+  "schema": "2",
+  "stages": {
+    "docling": {
+      "cache_key": "e4497f536965caae35bf20a0fc2f48016f86d6ae326d213a93467e0d9f679043",
+      "completed_at": "2026-09-02T17:57:46.217822+00:00",
+      "duration_seconds": 52.248,
+      "image_mode": "referenced",
+      "outputs": [
+        "docling.md",
+        "docling_code.json"
+      ],
+      "status": "complete"
+    },
+    "nougat": {
+      "cache_key": "745cf6b0080cc675d998fda1e001cab020682e9d41c1bb737598905a897e6aad",
+      "completed_at": "2026-08-19T13:30:22.692292+00:00",
+      "duration_seconds": 2089.521,
+      "outputs": [
+        "nougat.mmd"
+      ],
+      "status": "complete"
+    }
+  },
+  "tools": {
+    "docling": {
+      "command": "docling",
+      "version": "2.71.0"
+    },
+    "nougat": {
+      "command": "nougat",
+      "version": "0.1.17"
+    }
+  },
+  "updated_at": "2026-10-14T13:08:48.673153+00:00"
+}

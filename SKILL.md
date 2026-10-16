@@ -58,6 +58,11 @@ For a shareable, placeholder-based example covering dependency checks,
 conversion, report review, and PDF compilation, see the
 [complete POSIX workflow template](INSTALL.md#complete-posix-workflow-template).
 
+The checked-in reference conversion is
+[examples/eric-sims-quantitative-rbc](examples/eric-sims-quantitative-rbc/README.md).
+It shows the merged Markdown, figures, merge report, and OCR-audit artifacts
+this skill should produce. The source PDF is not stored in the repository.
+
 ## Outputs
 
 Each PDF gets a directory named <safe-stem>-<content-hash> containing:
@@ -90,8 +95,9 @@ Optional LaTeX output is created with --to-latex when Pandoc is installed.
   virtual environments first, and reuse any validated Nougat or Docling
   installation. Do not ask the user to install or create a new environment
   until those checks show that a usable installation is unavailable.
-- The manifest records the PDF hash, profile, arguments, tool versions, runtime,
-  and completed stages.
+- The manifest records the PDF basename and hash, profile, arguments, tool
+  executable names and versions, runtime, and completed stages. Absolute paths
+  stay in memory for the running process and are not written into the job.
 - Docling referenced image export is the default. The runner retries with
   embedded images when the installed Docling version cannot export references.
 - Docling exports Markdown and JSON in the same invocation. The runner derives

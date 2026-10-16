@@ -329,7 +329,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(code), 89)
         self.assertEqual([int(line.split(maxsplit=1)[0]) for line in code], list(range(1, 90)))
         self.assertEqual(code[1], "2")
-        self.assertIn("load param_rbc_moments;", code[6])
+        self.assertIn("load baseline_rbc_params;", code[6])
         self.assertIn("set_param_value", code[7])
         self.assertIn("K(-1)^(alpha)*N^(-alpha)", code[29])
         self.assertIn("logY -logN", code[59])
@@ -869,6 +869,8 @@ class PipelineTests(unittest.TestCase):
             "--output-dir",
             str(self.root / "outputs"),
             "--merge-only",
+            "--nougat-cmd",
+            str(self.nougat),
         ]
         with patch.object(sys, "argv", argv):
             self.assertEqual(pipeline.main(), 0)
@@ -909,6 +911,86 @@ class PipelineTests(unittest.TestCase):
             patch.object(pipeline.shutil, "which", return_value=None),
         ):
             self.assertEqual(pipeline.find_audit_interpreter(str(nougat), {}), str(interpreter))
+
+    def test_audit_interpreter_resolves_basename_without_using_cwd(self) -> None:
+        bindir = self.root / "venv" / "bin"
+        bindir.mkdir(parents=True)
+        nougat = bindir / "nougat"
+        interpreter = bindir / "python"
+        nougat.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        interpreter.write_bytes(b"python")
+        nougat.chmod(nougat.stat().st_mode | stat.S_IXUSR)
+        interpreter.chmod(interpreter.stat().st_mode | stat.S_IXUSR)
+        manifest = {"tools": {"nougat": {"command": "nougat"}}}
+        cwd_python = self.root / "python"
+        cwd_python.write_bytes(b"python")
+        cwd_python.chmod(cwd_python.stat().st_mode | stat.S_IXUSR)
+
+        with (
+            patch.object(pipeline, "launcher_interpreter", return_value=None),
+            patch.object(
+                pipeline,
+                "audit_interpreter_has_pdfium",
+                side_effect=lambda candidate: Path(candidate) == interpreter,
+            ),
+            patch.object(pipeline, "find_command", side_effect=lambda cmd: str(nougat) if cmd == "nougat" else None),
+        ):
+            self.assertEqual(pipeline.find_audit_interpreter(None, manifest), str(interpreter))
+
+        with (
+            patch.object(pipeline, "launcher_interpreter", return_value=None),
+            patch.object(
+                pipeline,
+                "audit_interpreter_has_pdfium",
+                side_effect=lambda candidate: Path(candidate) == interpreter,
+            ),
+            patch.object(pipeline, "find_command", return_value=None),
+        ):
+            self.assertEqual(pipeline.find_audit_interpreter(str(nougat), manifest), str(interpreter))
+
+        previous = Path.cwd()
+        os.chdir(self.root)
+        try:
+            with (
+                patch.object(pipeline, "launcher_interpreter", return_value=None),
+                patch.object(
+                    pipeline,
+                    "audit_interpreter_has_pdfium",
+                    side_effect=lambda candidate: Path(candidate) == cwd_python,
+                ),
+                patch.object(pipeline, "find_command", return_value=None),
+                patch.object(pipeline.shutil, "which", return_value=None),
+            ):
+                self.assertIsNone(pipeline.find_audit_interpreter(None, manifest))
+        finally:
+            os.chdir(previous)
+
+    def test_job_artifacts_omit_absolute_output_root(self) -> None:
+        pdf = self.root / "privacy.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nprivacy")
+        output_dir = (self.root / "outputs").resolve()
+        self.assertEqual(self.run_pipeline(pdf, output_dir=output_dir), 0)
+        job_dir = next(output_dir.iterdir())
+        manifest = json.loads((job_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["input"]["path"], pdf.name)
+        self.assertEqual(manifest["tools"]["nougat"]["command"], self.nougat.name)
+        self.assertEqual(manifest["tools"]["docling"]["command"], self.docling.name)
+        self.assertEqual(manifest["config"]["nougat"]["tool"]["command"], self.nougat.name)
+        self.assertEqual(manifest["config"]["docling"]["tool"]["command"], self.docling.name)
+        self.assertEqual(manifest["runtime"]["python"], Path(sys.executable).name)
+        self.assertNotIn(str(output_dir), json.dumps(manifest))
+        needle = str(output_dir).encode("utf-8")
+        for path in job_dir.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(needle, path.read_bytes(), str(path.relative_to(job_dir)))
+
+        self.assertEqual(self.run_pipeline(pdf, "--resume", output_dir=output_dir), 0)
+        self.assertEqual((self.counter_dir / "nougat").read_text(), "1")
+        self.assertEqual((self.counter_dir / "docling").read_text(), "1")
+        self.assertEqual(self.run_pipeline(pdf, "--merge-only", output_dir=output_dir), 0)
+        resumed = json.loads((job_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(resumed["input"]["path"], pdf.name)
+        self.assertEqual(resumed["tools"]["nougat"]["command"], self.nougat.name)
 
     def test_diagnostics_report_json_is_machine_readable(self) -> None:
         args = type(
