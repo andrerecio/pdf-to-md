@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -92,6 +93,37 @@ else:
     path.write_text(source, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return path
+
+
+def write_text_pdf(path, pages):
+    """Small real PDF fixture: exercise PDFium, not the unavailable-PDF fallback."""
+    objects = [b'<< /Type /Catalog /Pages 2 0 R >>', b'',
+               b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']
+    kids = []
+    for text in pages:
+        page_id = len(objects) + 1
+        kids.append(f'{page_id} 0 R')
+        objects.append((f'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] '
+            f'/Resources << /Font << /F1 3 0 R >> >> /Contents {page_id+1} 0 R >>').encode())
+        commands = ['BT /F1 10 Tf 12 TL 40 740 Td']
+        for line in textwrap.wrap(text, 85):
+            escaped = line.replace('\\', '\\\\').replace('(', '\\(').replace(')', '\\)')
+            commands.append(f'({escaped}) Tj T*')
+        commands.append('ET')
+        stream = '\n'.join(commands).encode('ascii')
+        objects.append(f'<< /Length {len(stream)} >>\nstream\n'.encode() + stream + b'\nendstream')
+    objects[1] = f'<< /Type /Pages /Count {len(pages)} /Kids [{" ".join(kids)}] >>'.encode()
+    result = bytearray(b'%PDF-1.4\n')
+    offsets = [0]
+    for index, obj in enumerate(objects, 1):
+        offsets.append(len(result))
+        result.extend(f'{index} 0 obj\n'.encode() + obj + b'\nendobj\n')
+    xref = len(result)
+    result.extend(f'xref\n0 {len(objects)+1}\n0000000000 65535 f \n'.encode())
+    for offset in offsets[1:]:
+        result.extend(f'{offset:010d} 00000 n \n'.encode())
+    result.extend(f'trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n'.encode())
+    path.write_bytes(result)
 
 
 class PipelineTests(unittest.TestCase):
@@ -341,7 +373,7 @@ class PipelineTests(unittest.TestCase):
         self.assertGreater(merged.index("This prose must remain outside"), merged.rindex("```"))
 
         code_report = report["code_blocks"]
-        self.assertEqual(report["schema"], "5")
+        self.assertEqual(report["schema"], "6")
         self.assertEqual(code_report["replaced"], 1)
         self.assertEqual(code_report["fallback"], 0)
         self.assertEqual(code_report["blocks"][0]["pages"], [10, 11, 12])
@@ -878,7 +910,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual((self.counter_dir / "docling").read_text(), "1")
         job_dir = next((self.root / "outputs").iterdir())
         merge_report = json.loads((job_dir / "merge_report.json").read_text())
-        self.assertEqual(merge_report["schema"], "5")
+        self.assertEqual(merge_report["schema"], "6")
         self.assertIn("ocr_audit", merge_report)
         self.assertTrue((job_dir / "ocr_audit.json").is_file())
         timings = json.loads((job_dir / "timings.json").read_text())
@@ -892,6 +924,115 @@ class PipelineTests(unittest.TestCase):
         skipped_report = json.loads((job_dir / "merge_report.json").read_text())
         self.assertEqual(skipped_report["ocr_audit"]["status"], "skipped")
         self.assertTrue((job_dir / "ocr_audit_review.json").is_file())
+
+    def test_missing_markers_block_strict_success_when_audit_skipped(self):
+        pdf = self.root / "missing.pdf"
+        pdf.write_bytes(b"%PDF-1.7 synthetic")
+        with patch.object(pipeline, "find_audit_interpreter", return_value=None):
+            self.assertEqual(self.run_pipeline(pdf, "--skip-ocr-audit"), 0)
+            job = next((self.root / "outputs").iterdir())
+            (job / "nougat.mmd").write_text("Before\n[MISSING_PAGE_EMPTY:16]\n[MISSING_PAGE_FAIL:25]\n[MISSING_PAGE_POST]\n[MISSING_PAGE_POST:10]\nAfter")
+            self.assertEqual(self.run_pipeline(pdf, "--merge-only", "--skip-ocr-audit", "--require-complete"), 2)
+            report = json.loads((job / "merge_report.json").read_text())
+            mapping = json.loads((job / "page_map.json").read_text())
+            text = (job / "missing.md").read_text()
+            self.assertTrue(report["validation"]["ok"])
+            self.assertEqual(report["status"], "review_required")
+            self.assertEqual(report["completeness"]["status"], "incomplete")
+            self.assertEqual(report["completeness"]["missing_pages"], [10, 16, 25])
+            self.assertIn("**Conversion requires review:**", text)
+            for marker in mapping["missing_markers"]:
+                a, b = marker["span"]
+                self.assertTrue(text[a:b].startswith("[MISSING_PAGE_"))
+            self.assertEqual(mapping["final_md_sha256"], hashlib.sha256(text.encode()).hexdigest())
+            self.assertEqual(self.run_pipeline(pdf, "--merge-only", "--skip-ocr-audit", "--require-complete"), 2)
+            self.assertEqual((job / "missing.md").read_text(), text)
+            self.assertEqual((self.counter_dir / "nougat").read_text(), "1")
+            self.assertEqual((self.counter_dir / "docling").read_text(), "1")
+            base = (job / "recovery" / "base.md").read_text()
+            replacements = []
+            for number, kind in [(16, "EMPTY"), (25, "FAIL")]:
+                original = f"[MISSING_PAGE_{kind}:{number}]"
+                start = base.index(original)
+                replacements.append({"page": number, "original": original,
+                    "span": [start, start + len(original)], "replacement": f"Verified synthetic page {number}.",
+                    "method": "transcription", "verification": {"source_page": number,
+                    "visually_verified": True, "evidence": "Synthetic verification fixture."}})
+            ledger = self.root / "recovery.json"
+            ledger.write_text(json.dumps({"schema": "1", "pdf_sha256": pipeline.sha256_file(pdf),
+                "base_md_sha256": hashlib.sha256(base.encode()).hexdigest(), "replacements": replacements}))
+            with self.assertRaisesRegex(ValueError, "membership cannot be verified"):
+                self.run_pipeline(pdf, "--merge-only", "--skip-ocr-audit",
+                    "--require-complete", "--recovery-ledger", str(ledger))
+            self.assertEqual((job / "missing.md").read_text(), text)
+            self.assertEqual(json.loads((job / "merge_report.json").read_text()), report)
+
+    def test_invalid_recovery_preserves_delivered_artifacts(self):
+        if pipeline.find_audit_interpreter(None, {}) is None:
+            self.skipTest("PDFium runtime unavailable")
+        pdf = self.root / 'recovery.pdf'
+        source = 'A stable uniquely identifiable paragraph with meaningful information.'
+        write_text_pdf(pdf, [source])
+        self.env['FAKE_NOUGAT_MARKDOWN'] = source
+        self.assertEqual(self.run_pipeline(pdf, '--require-complete'), 0)
+        job = next((self.root / 'outputs').iterdir())
+        names = ['recovery.md', 'page_map.json', 'merge_report.json', 'ocr_audit.json', 'recovery/base.md']
+        before = {name: (job/name).read_bytes() for name in names}
+        base = (job/'recovery/base.md').read_text()
+        start = base.index(source)
+        ledger = {'schema': '1', 'pdf_sha256': pipeline.sha256_file(pdf),
+                  'base_md_sha256': pipeline.digest(base), 'replacements': [{
+                      'page': 999, 'original': source, 'replacement': 'Changed content.',
+                      'span': [start, start+len(source)], 'method': 'transcription',
+                      'verification': {'source_page': 999, 'visually_verified': True,
+                                       'evidence': 'Synthetic verification fixture.'}}]}
+        path = self.root/'ledger.json'
+        for invalid in ['page', 'stale', 'boundary', 'asset']:
+            with self.subTest(invalid=invalid):
+                candidate = json.loads(json.dumps(ledger))
+                if invalid == 'stale':
+                    candidate['base_md_sha256'] = 'stale'
+                if invalid == 'boundary':
+                    candidate['replacements'][0]['span'] = [0, 1]
+                if invalid == 'asset':
+                    candidate['replacements'][0]['page'] = 1
+                    candidate['replacements'][0]['verification']['source_page'] = 1
+                    candidate['replacements'][0]['replacement'] = '![broken](figures/nonexistent.png)'
+                path.write_text(json.dumps(candidate))
+                with self.assertRaises(ValueError):
+                    self.run_pipeline(pdf, '--merge-only', '--recovery-ledger', str(path))
+                self.assertEqual({name: (job/name).read_bytes() for name in names}, before)
+        ledger['replacements'][0]['page'] = 1
+        ledger['replacements'][0]['verification']['source_page'] = 1
+        ledger['replacements'][0]['replacement'] = source + ' Verified extra material.'
+        path.write_text(json.dumps(ledger))
+        self.assertEqual(self.run_pipeline(pdf, '--merge-only', '--recovery-ledger', str(path)), 0)
+        accepted = {name: (job/name).read_bytes() for name in names[:3]}
+        self.assertIn(b'Verified extra material.', accepted['recovery.md'])
+        self.assertEqual(self.run_pipeline(pdf, '--merge-only', '--recovery-ledger', str(path)), 0)
+        self.assertEqual({name: (job/name).read_bytes() for name in names[:3]}, accepted)
+
+    def test_strict_mode_accounts_for_repeated_occurrences_in_real_pdf(self):
+        interpreter = pipeline.find_audit_interpreter(None, {})
+        if interpreter is None:
+            self.skipTest("PDFium runtime unavailable")
+        repeated = 'These assumptions determine household savings every period.'
+        first = 'The opening section introduces aggregate production capital accumulation and firms. ' + repeated
+        end = 'The following section investigates monetary policy shocks under sticky prices.'
+        second = repeated + ' ' + end
+        pdf = self.root / 'two-pages.pdf'
+        write_text_pdf(pdf, [first, second])
+        self.env['FAKE_NOUGAT_MARKDOWN'] = first + '\n\n2\n\n' + end
+        self.assertEqual(self.run_pipeline(pdf, '--require-complete'), 2)
+        job = next((self.root / 'outputs').iterdir())
+        report = json.loads((job / 'merge_report.json').read_text())
+        self.assertEqual(report['completeness']['status'], 'unknown')
+        self.assertEqual(report['status'], 'review_required')
+        (job / 'nougat.mmd').write_text(first + '\n\n2\n\n' + second)
+        self.assertEqual(self.run_pipeline(pdf, '--merge-only', '--require-complete'), 0)
+        report = json.loads((job / 'merge_report.json').read_text())
+        self.assertEqual(report['completeness']['status'], 'complete')
+        self.assertEqual(report['status'], 'clear')
 
     def test_audit_interpreter_discovers_windows_venv_python(self) -> None:
         nougat = self.root / "nougat.exe"
